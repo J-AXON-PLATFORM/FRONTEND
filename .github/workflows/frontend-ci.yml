@@ -59,3 +59,21 @@ jobs:
 
       - name: Audit all dependencies
         run: npm run audit:dependencies
+
+      - name: Build frontend container
+        run: >-
+          docker build
+          --build-arg VCS_REF=${{ github.sha }}
+          --tag jaxon-frontend:ci
+          .
+
+      - name: Verify frontend container
+        run: ./scripts/verify-container.sh jaxon-frontend:ci
+
+      - name: Scan frontend container
+        run: >-
+          docker run --rm
+          --volume /var/run/docker.sock:/var/run/docker.sock
+          aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln --no-progress
+          jaxon-frontend:ci
