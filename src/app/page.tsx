@@ -1,6 +1,7 @@
 "use client";
 
 import { ApiError, getCurrentSession } from "@/features/auth/api";
+import { AssetWorkspace } from "@/features/inventory/asset-workspace";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -42,6 +43,7 @@ export default function HomePage() {
           {session.data.roles.map((role) => <li key={role}>{role.replaceAll("_", " ")}</li>)}
         </ul>
       </section>
+      <AssetWorkspace session={session.data} />
     </main>
   );
 }

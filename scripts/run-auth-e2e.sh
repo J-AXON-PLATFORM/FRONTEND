@@ -67,6 +67,8 @@ done
 curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness" >/dev/null
 
 export NEXT_PUBLIC_JAXON_API_URL="http://localhost:${backend_port}/api/v1"
+export JAXON_E2E_BACKEND_URL="http://localhost:${backend_port}"
+export JAXON_E2E_DATABASE_CONTAINER="${database_container}"
 export JAXON_E2E_FRONTEND_URL="http://localhost:${frontend_port}"
 setsid bash -c 'cd "$1" && npm run build && exec npm run start -- --hostname localhost --port "$2"' \
   _ "${frontend_dir}" "${frontend_port}" >"${work_dir}/frontend.log" 2>&1 &
