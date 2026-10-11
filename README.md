@@ -1,6 +1,6 @@
 # J-AXON Frontend
 
-Fundacion tecnica de la aplicacion web de J-AXON. Este repositorio usa Next.js App Router, React y TypeScript. Todavia no contiene funcionalidad de negocio.
+Aplicacion web de J-AXON con Next.js App Router, React y TypeScript. Implementa el login humano y la vista minima de sesion de `OLA1-IAM-001a`.
 
 La documentacion canonica general del proyecto vive en el directorio `doc/` del repositorio `BACKEND`.
 
@@ -38,13 +38,14 @@ npm run dev
 npm run lint
 npm run typecheck
 npm run test
+npm run test:e2e:local
 npm run build
 npm run verify
 npm run audit:production
 npm run audit:dependencies
 ```
 
-`verify` ejecuta lint, typecheck, pruebas y build en ese orden.
+`verify` ejecuta lint, typecheck, pruebas y build en ese orden. `test:e2e:local` requiere Docker, Java 25 y el repositorio `backend` candidato en `../backend`; crea credenciales y PostgreSQL efimeros, ejecuta ambos candidatos y limpia solo sus recursos propios.
 
 ## Estructura
 
@@ -55,7 +56,7 @@ Los Server Components son el valor por defecto. Un componente solo debe usar `"u
 
 La aplicacion es no-indexable. No deben almacenarse secretos en variables `NEXT_PUBLIC_*` ni en el navegador.
 
-TanStack Query se incorporara cuando exista el primer uso ejecutable de server-state. Docker, despliegue y Production estan fuera del alcance de esta fundacion.
+TanStack Query mantiene la sesion recuperada solo en memoria. La cookie `HttpOnly` no es accesible desde JavaScript y el CSRF no se escribe en `localStorage`, `sessionStorage` o IndexedDB. `NEXT_PUBLIC_JAXON_API_URL` contiene solo la URL publica del backend, nunca secretos.
 
 ## Seguridad de dependencias
 
