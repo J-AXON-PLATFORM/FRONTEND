@@ -1,86 +1,190 @@
 :root {
-  color-scheme: light dark;
-  --background: #f3f0e8;
-  --foreground: #17201d;
-  --muted: #53615b;
-  --accent: #b64926;
-  --surface: rgba(255, 255, 255, 0.62);
-  --border: rgba(23, 32, 29, 0.18);
+  color-scheme: light;
+  --ink: #151b19;
+  --muted: #5d6964;
+  --paper: #f1eee4;
+  --panel: #fffdf7;
+  --signal: #d64b2a;
+  --signal-dark: #963018;
+  --line: #c7c2b5;
+  --dark: #16231f;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #101613;
-    --foreground: #f2f0e9;
-    --muted: #a7b2ac;
-    --accent: #ed7a55;
-    --surface: rgba(255, 255, 255, 0.055);
-    --border: rgba(242, 240, 233, 0.18);
-  }
-}
+* { box-sizing: border-box; }
 
-* {
-  box-sizing: border-box;
-}
-
-html {
-  min-width: 320px;
-  background: var(--background);
-}
+html { min-width: 320px; background: var(--paper); }
 
 body {
   min-height: 100vh;
   margin: 0;
-  color: var(--foreground);
-  background:
-    linear-gradient(115deg, transparent 0 68%, color-mix(in srgb, var(--accent) 8%, transparent) 68% 69%, transparent 69%),
-    var(--background);
+  color: var(--ink);
+  background: var(--paper);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-main {
+button, input { font: inherit; }
+
+button:focus-visible, input:focus-visible {
+  outline: 3px solid #247fbb;
+  outline-offset: 3px;
+}
+
+.auth-shell {
   display: grid;
   min-height: 100vh;
-  place-items: center;
-  padding: clamp(1.5rem, 5vw, 5rem);
+  grid-template-columns: minmax(18rem, 0.85fr) minmax(28rem, 1.15fr);
 }
 
-.foundation {
-  width: min(100%, 54rem);
-  padding: clamp(2rem, 7vw, 5.5rem);
-  border: 1px solid var(--border);
-  border-left: 0.45rem solid var(--accent);
-  background: var(--surface);
+.brand-panel {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(2rem, 5vw, 5rem);
+  overflow: hidden;
+  color: #f7f2e5;
+  background:
+    linear-gradient(140deg, transparent 0 54%, rgb(214 75 42 / 22%) 54% 55%, transparent 55%),
+    var(--dark);
 }
 
-.eyebrow {
-  margin: 0 0 1.25rem;
-  color: var(--accent);
+.eyebrow, .sequence {
+  margin: 0;
+  color: var(--signal);
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
 }
 
-h1 {
-  margin: 0;
-  font-size: clamp(3.4rem, 13vw, 8.5rem);
-  font-weight: 780;
-  letter-spacing: -0.075em;
-  line-height: 0.86;
+.wordmark {
+  margin: auto 0;
+  font-size: clamp(4rem, 11vw, 9rem);
+  font-weight: 850;
+  letter-spacing: -0.09em;
+  line-height: 0.82;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
 }
 
-.summary {
-  max-width: 37rem;
+.brand-copy {
+  max-width: 25rem;
   margin: 2rem 0 0;
-  color: var(--muted);
-  font-size: clamp(1rem, 2vw, 1.2rem);
-  line-height: 1.7;
+  color: #b9c7c1;
+  line-height: 1.65;
 }
 
-@media (max-width: 36rem) {
-  .foundation {
-    padding: 2rem 1.5rem;
-  }
+.login-panel {
+  display: grid;
+  place-items: center;
+  padding: clamp(1.5rem, 7vw, 7rem);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 4.95rem, rgb(21 27 25 / 5%) 5rem),
+    var(--paper);
+}
+
+.login-card { width: min(100%, 31rem); }
+
+h1 {
+  margin: 1rem 0;
+  font-size: clamp(2.8rem, 7vw, 5.4rem);
+  font-weight: 780;
+  letter-spacing: -0.065em;
+  line-height: 0.95;
+  overflow-wrap: anywhere;
+}
+
+.intro {
+  margin: 0 0 2.25rem;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.login-form { display: grid; gap: 1.35rem; }
+
+.field { display: grid; gap: 0.5rem; }
+
+.field label { font-size: 0.82rem; font-weight: 750; letter-spacing: 0.04em; }
+
+.field input {
+  min-height: 3.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0.75rem 0.9rem;
+  color: var(--ink);
+  background: var(--panel);
+}
+
+.field input:hover { border-color: var(--ink); }
+
+.login-form button {
+  min-height: 3.4rem;
+  border: 0;
+  margin-top: 0.4rem;
+  padding: 0.8rem 1rem;
+  color: white;
+  background: var(--signal-dark);
+  font-weight: 800;
+  letter-spacing: 0.025em;
+  cursor: pointer;
+}
+
+.login-form button:hover:not(:disabled) { background: var(--dark); }
+.login-form button:disabled { cursor: wait; opacity: 0.65; }
+
+.form-error {
+  border-left: 0.25rem solid var(--signal);
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+  color: #751f10;
+  background: #f8ddd4;
+  line-height: 1.45;
+}
+
+.status-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2rem;
+  color: var(--muted);
+}
+
+.session-shell { min-height: 100vh; padding: clamp(1.5rem, 5vw, 4rem); }
+
+.session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1rem;
+}
+
+.status-dot { display: flex; align-items: center; gap: 0.6rem; color: var(--muted); font-size: 0.85rem; }
+.status-dot::before { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #27805a; content: ""; }
+
+.identity-card {
+  width: min(100%, 60rem);
+  margin: clamp(5rem, 14vh, 10rem) auto 0;
+  border-left: 0.5rem solid var(--signal);
+  padding: clamp(1.5rem, 5vw, 4rem);
+  background: var(--panel);
+  box-shadow: 1.5rem 1.5rem 0 rgb(21 27 25 / 7%);
+}
+
+.role-list { display: flex; flex-wrap: wrap; gap: 0.65rem; margin: 0; padding: 0; list-style: none; }
+.role-list li { border: 1px solid var(--dark); padding: 0.55rem 0.75rem; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+
+@media (max-width: 48rem) {
+  .auth-shell { grid-template-columns: 1fr; }
+  .brand-panel { min-height: 13rem; }
+  .wordmark { margin: 2rem 0 0; font-size: clamp(3.5rem, 18vw, 6rem); writing-mode: initial; transform: none; }
+  .brand-copy { display: none; }
+  .login-panel { place-items: start stretch; }
+  .login-card { margin: 0 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }

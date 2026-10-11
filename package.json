@@ -15,17 +15,21 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:local": "./scripts/run-auth-e2e.sh",
     "test:watch": "vitest",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build",
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "audit:dependencies": "node scripts/verify-npm-audit.mjs"
   },
   "dependencies": {
+    "@tanstack/react-query": "5.104.1",
     "next": "16.3.8",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@types/node": "24.19.1",
