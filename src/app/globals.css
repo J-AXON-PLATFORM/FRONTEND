@@ -22,9 +22,9 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 
-button:focus-visible, input:focus-visible, select:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 3px solid #247fbb;
   outline-offset: 3px;
 }
@@ -181,6 +181,26 @@ h1 {
   margin: 5rem auto 0;
 }
 
+.agent-workspace { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: 4rem; }
+.agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; padding: 2rem 0 5rem; }
+.agent-step { display: grid; align-content: start; gap: 1.15rem; border-top: 0.45rem solid var(--dark); padding: 1.35rem; background: var(--panel); }
+.agent-step > p { margin: 0; color: var(--muted); line-height: 1.5; }
+.agent-step code { overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.agent-step button { min-height: 3.25rem; border: 0; padding: 0.75rem 1rem; color: white; background: var(--signal-dark); font-weight: 800; cursor: pointer; }
+.agent-step button:hover:not(:disabled) { background: var(--dark); }
+.agent-step button:disabled { cursor: not-allowed; opacity: 0.55; }
+.command-panel { display: grid; gap: 0.75rem; border-left: 0.25rem solid var(--signal); padding: 1rem; background: #f7eee4; }
+.command-panel p { margin: 0; line-height: 1.45; }
+.key-form textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 0; padding: 0.75rem 0.9rem; color: var(--ink); background: var(--panel); font-family: ui-monospace, monospace; }
+.field-help { font-size: 0.82rem; }
+.agent-card { border: 1px solid var(--line); padding: 1.2rem; background: #f7f4ea; }
+.agent-card h3 { margin: 0; font-family: ui-monospace, monospace; font-size: 1rem; overflow-wrap: anywhere; }
+.agent-status { border: 1px solid #6c5d29; padding: 0.4rem 0.55rem; color: #6c5d29; font-family: ui-monospace, monospace; font-size: 0.7rem; font-weight: 800; }
+.agent-card dl { margin: 1rem 0 0; }
+.agent-card dl div { display: grid; gap: 0.25rem; border-top: 1px solid var(--line); padding: 0.65rem 0; }
+.agent-card dt { color: var(--muted); font-size: 0.72rem; font-weight: 750; text-transform: uppercase; }
+.agent-card dd { margin: 0; overflow-wrap: anywhere; }
+
 .workspace-heading {
   display: flex;
   align-items: end;
@@ -255,6 +275,7 @@ h1 {
   .login-card { margin: 0 auto; }
   .workspace-heading { display: grid; }
   .workspace-grid { grid-template-columns: 1fr; }
+  .agent-grid { grid-template-columns: 1fr; }
   .lookup-control { grid-template-columns: 1fr; gap: 0.65rem; }
   .asset-card-title { display: grid; }
   .asset-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }

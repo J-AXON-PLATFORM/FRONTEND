@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 frontend_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="${JAXON_BACKEND_DIR:-${frontend_dir}/../backend}"
+automation_dir="${JAXON_AUTOMATION_DIR:-${frontend_dir}/../automation-collector}"
 owner="jaxon-auth-e2e-$RANDOM-$$"
 database_container="${owner}-postgres"
 database_image="jaxon-postgres-pgvector-test:${owner}"
@@ -24,6 +25,8 @@ cleanup() {
 trap cleanup EXIT
 
 test -f "${backend_dir}/pom.xml"
+test -f "${automation_dir}/pyproject.toml"
+uv --project "${automation_dir}" lock --check
 if curl --silent --max-time 1 "http://localhost:${backend_port}" >/dev/null 2>&1; then
   printf 'Backend test port %s is already in use\n' "${backend_port}" >&2
   exit 1
@@ -70,6 +73,8 @@ export NEXT_PUBLIC_JAXON_API_URL="http://localhost:${backend_port}/api/v1"
 export JAXON_E2E_BACKEND_URL="http://localhost:${backend_port}"
 export JAXON_E2E_DATABASE_CONTAINER="${database_container}"
 export JAXON_E2E_FRONTEND_URL="http://localhost:${frontend_port}"
+export JAXON_E2E_AUTOMATION_DIR="${automation_dir}"
+export JAXON_E2E_AGENT_STATE_DIR="${work_dir}/agent-state"
 setsid bash -c 'cd "$1" && npm run build && exec npm run start -- --hostname localhost --port "$2"' \
   _ "${frontend_dir}" "${frontend_port}" >"${work_dir}/frontend.log" 2>&1 &
 frontend_pid=$!
