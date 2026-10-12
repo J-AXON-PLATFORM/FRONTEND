@@ -1,6 +1,7 @@
 "use client";
 
 import { ApiError, type Session } from "@/features/auth/api";
+import { AgentEnrollment } from "@/features/agents/agent-enrollment";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
@@ -50,6 +51,7 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
   });
   const authenticationError = [creation.error, lookup.error]
     .find((error) => error instanceof ApiError && error.status === 401);
+  const selectedAsset = lookup.data ?? createdAsset;
 
   useEffect(() => {
     if (authenticationError) {
@@ -157,6 +159,7 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
           {lookup.data && <AssetCard asset={lookup.data} label="Consulta por ID" />}
         </div>
       </div>
+      {selectedAsset && <AgentEnrollment assetId={selectedAsset.assetId} session={session} />}
     </section>
   );
 }
