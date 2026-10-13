@@ -33,6 +33,13 @@ const registeredAgent = {
   publicKeyFingerprint: "SHA256:vi4Mo/pzHrbpqbCCSjJz4KjU8NjWTGGjHSXfTYzA9aE",
   updatedAt: "2026-10-11T20:05:00Z",
 };
+const activeAgent = { ...registeredAgent, status: "ACTIVE", version: 1 };
+const connection = {
+  host: "sftp.example.internal",
+  port: 2022,
+  username: `agent-${agentId}`,
+  publicHostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPinnedServerKey",
+};
 
 afterEach(() => {
   cleanup();
@@ -99,6 +106,39 @@ describe("AgentEnrollment", () => {
     fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
     expect(screen.getByRole("alert").textContent).toContain("UUIDv4");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("activates only a pending Agent with a key and keeps connection data in memory", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(pendingAgent, 201))
+      .mockResolvedValueOnce(jsonResponse(pendingAgent))
+      .mockResolvedValueOnce(jsonResponse(registeredAgent))
+      .mockResolvedValueOnce(jsonResponse(connection))
+      .mockResolvedValueOnce(jsonResponse(activeAgent));
+    vi.stubGlobal("fetch", fetchMock);
+    renderEnrollment();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pre-registrar Agent" }));
+    expect(screen.queryByRole("button", { name: "Activar Agent" })).toBeNull();
+    fireEvent.change(await screen.findByLabelText("Clave pública OpenSSH Ed25519"), {
+      target: { value: publicKey },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Registrar clave pública" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Activar Agent" }));
+
+    const result = await screen.findByRole("article", { name: "Conexión SFTP del Agent" });
+    expect(within(result).getByText(connection.host)).toBeDefined();
+    expect(within(result).getByText(connection.publicHostKey)).toBeDefined();
+    expect(screen.getByText("ACTIVE")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Activar Agent" })).toBeNull();
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": session.csrfToken },
+    });
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+    expect(document.body.textContent).not.toContain(session.csrfToken);
   });
 
   it("does not retain a previous Agent card after a failed lookup", async () => {

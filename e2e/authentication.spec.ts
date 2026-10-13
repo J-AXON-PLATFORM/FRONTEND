@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync } from "node:fs";
 
 const username = process.env.JAXON_E2E_USERNAME;
 const password = process.env.JAXON_E2E_PASSWORD;
@@ -7,10 +8,14 @@ const backendUrl = process.env.JAXON_E2E_BACKEND_URL;
 const databaseContainer = process.env.JAXON_E2E_DATABASE_CONTAINER;
 const automationDir = process.env.JAXON_E2E_AUTOMATION_DIR;
 const agentStateDir = process.env.JAXON_E2E_AGENT_STATE_DIR;
+const sftpGoApiUrl = process.env.JAXON_SFTPGO_ADMIN_API_URL;
+const sftpGoAdminUsername = process.env.JAXON_SFTPGO_ADMIN_USERNAME;
+const sftpGoAdminPassword = process.env.JAXON_SFTPGO_ADMIN_PASSWORD;
 
 test.beforeAll(() => {
-  if (!username || !password || !backendUrl || !databaseContainer || !automationDir || !agentStateDir) {
-    throw new Error("E2E identity, backend, database, and Agent configuration are required");
+  if (!username || !password || !backendUrl || !databaseContainer || !automationDir
+    || !agentStateDir || !sftpGoApiUrl || !sftpGoAdminUsername || !sftpGoAdminPassword) {
+    throw new Error("E2E identity, backend, database, SFTPGo, and Agent configuration are required");
   }
 });
 
@@ -81,12 +86,192 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(agentCard).toContainText(initialized.publicKeyFingerprint);
   await expect(page.locator("body")).not.toContainText("OPENSSH PRIVATE KEY");
 
+  const activationResponse = page.waitForResponse((response) => response.url().endsWith(`/api/v1/agents/${agentId}/activate`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Activar Agent" }).click();
+  expect((await activationResponse).status()).toBe(200);
+  await expect(agentCard).toContainText("ACTIVE");
+  const connectionCard = page.getByRole("article", { name: "Conexión SFTP del Agent" });
+  await expect(connectionCard).toBeVisible();
+  const connectionText = await connectionCard.textContent();
+  expect(connectionText).not.toContain(password);
+  const connectionResponse = await (await activationResponse).json() as {
+    host: string;
+    port: number;
+    username: string;
+    publicHostKey: string;
+  };
+  const configuredOutput = execFileSync("uv", [
+    "run",
+    "--project",
+    automationDir!,
+    "--locked",
+    "jaxon-agent",
+    "configure-sftp",
+    "--state-dir",
+    agentStateDir!,
+    "--host",
+    connectionResponse.host,
+    "--port",
+    String(connectionResponse.port),
+    "--username",
+    connectionResponse.username,
+    "--host-key",
+    connectionResponse.publicHostKey,
+  ], { encoding: "utf8" });
+  expect(JSON.parse(configuredOutput).changed).toBe(true);
+  const verifiedOutput = execFileSync("uv", [
+    "run",
+    "--project",
+    automationDir!,
+    "--locked",
+    "jaxon-agent",
+    "verify-sftp",
+    "--state-dir",
+    agentStateDir!,
+  ], { encoding: "utf8" });
+  expect(JSON.parse(verifiedOutput).status).toBe("verified");
+  await expect(page.getByRole("button", { name: "Activar Agent" })).not.toBeVisible();
+
+  const currentSession = await page.evaluate(async (api) => {
+    const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
+    return response.json();
+  }, backendUrl!);
+  const apiMutation = async (
+    path: string,
+    method: "POST" | "PUT",
+    body?: Record<string, string>,
+  ) => page.evaluate(async ({ api, path, method, csrf, body }) => {
+    const response = await fetch(`${api}/api/v1${path}`, {
+      method,
+      credentials: "include",
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        "X-CSRF-Token": csrf,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: response.status, body: await response.json() };
+  }, { api: backendUrl!, path, method, csrf: currentSession.csrfToken as string, body });
+
+  const repeatedActivation = await apiMutation(`/agents/${agentId}/activate`, "POST");
+  expect(repeatedActivation.status).toBe(200);
+  expect(repeatedActivation.body).toEqual(connectionResponse);
+
+  const secondAsset = await apiMutation("/assets", "POST", {
+    name: `E2E isolated asset ${Date.now()}`,
+    assetType: "SERVER",
+    status: "ACTIVE",
+  });
+  expect(secondAsset.status).toBe(201);
+  const secondAgent = await apiMutation("/agents", "POST", {
+    assetId: secondAsset.body.assetId as string,
+  });
+  expect(secondAgent.status).toBe(201);
+  const secondAgentId = secondAgent.body.agentId as string;
+  const secondStateDir = `${agentStateDir}-second`;
+  const secondInitialized = JSON.parse(execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "initialize",
+    "--agent-id", secondAgentId, "--state-dir", secondStateDir,
+  ], { encoding: "utf8" })) as { publicKey: string };
+  const secondKey = await apiMutation(`/agents/${secondAgentId}/ssh-key`, "PUT", {
+    publicKey: secondInitialized.publicKey,
+  });
+  expect(secondKey.status).toBe(200);
+  const secondActivation = await apiMutation(`/agents/${secondAgentId}/activate`, "POST");
+  expect(secondActivation.status).toBe(200);
+  expect(secondActivation.body.username).not.toBe(connectionResponse.username);
+
+  const wrongHostStateDir = `${agentStateDir}-wrong-host`;
+  const crossUserStateDir = `${agentStateDir}-cross-user`;
+  cpSync(secondStateDir, wrongHostStateDir, { recursive: true });
+  cpSync(secondStateDir, crossUserStateDir, { recursive: true });
+  execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "configure-sftp",
+    "--state-dir", secondStateDir,
+    "--host", secondActivation.body.host as string,
+    "--port", String(secondActivation.body.port),
+    "--username", secondActivation.body.username as string,
+    "--host-key", secondActivation.body.publicHostKey as string,
+  ]);
+  expect(JSON.parse(execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "verify-sftp",
+    "--state-dir", secondStateDir,
+  ], { encoding: "utf8" })).status).toBe("verified");
+
+  execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "configure-sftp",
+    "--state-dir", wrongHostStateDir,
+    "--host", secondActivation.body.host as string,
+    "--port", String(secondActivation.body.port),
+    "--username", secondActivation.body.username as string,
+    "--host-key", initialized.publicKey,
+  ]);
+  const wrongHostVerification = spawnSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "verify-sftp",
+    "--state-dir", wrongHostStateDir,
+  ], { encoding: "utf8" });
+  expect(wrongHostVerification.status).toBe(2);
+  expect(wrongHostVerification.stderr).toContain("could not be verified securely");
+
+  execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "configure-sftp",
+    "--state-dir", crossUserStateDir,
+    "--host", secondActivation.body.host as string,
+    "--port", String(secondActivation.body.port),
+    "--username", connectionResponse.username,
+    "--host-key", secondActivation.body.publicHostKey as string,
+  ]);
+  const crossUserVerification = spawnSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "verify-sftp",
+    "--state-dir", crossUserStateDir,
+  ], { encoding: "utf8" });
+  expect(crossUserVerification.status).toBe(2);
+  expect(crossUserVerification.stderr).toContain("could not be verified securely");
+
+  const conflictingAgent = await apiMutation("/agents", "POST", { assetId });
+  expect(conflictingAgent.status).toBe(201);
+  const conflictingAgentId = conflictingAgent.body.agentId as string;
+  const conflictingStateDir = `${agentStateDir}-conflicting`;
+  const conflictingIdentity = JSON.parse(execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "initialize",
+    "--agent-id", conflictingAgentId, "--state-dir", conflictingStateDir,
+  ], { encoding: "utf8" })) as { publicKey: string };
+  expect((await apiMutation(`/agents/${conflictingAgentId}/ssh-key`, "PUT", {
+    publicKey: conflictingIdentity.publicKey,
+  })).status).toBe(200);
+  const activationConflict = await apiMutation(`/agents/${conflictingAgentId}/activate`, "POST");
+  expect(activationConflict.status).toBe(409);
+  expect(activationConflict.body.code).toBe("ASSET_ACTIVE_AGENT_CONFLICT");
+  const conflictingState = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT status || ':' ||
+      (SELECT count(*) FROM collector.outbox_events
+       WHERE event_type = 'AGENT_ACTIVATED' AND resource_id = a.id)
+      FROM collector.agents a WHERE id = '${conflictingAgentId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(conflictingState).toBe("PENDING:0");
+  const tokenResponse = await fetch(`${sftpGoApiUrl}/token`, {
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${sftpGoAdminUsername}:${sftpGoAdminPassword}`).toString("base64")}`,
+    },
+  });
+  expect(tokenResponse.status).toBe(200);
+  const adminToken = (await tokenResponse.json() as { access_token: string }).access_token;
+  const conflictingSftpUser = await fetch(
+    `${sftpGoApiUrl}/users/${encodeURIComponent(`agent-${conflictingAgentId}`)}`,
+    { headers: { Authorization: `Bearer ${adminToken}` } },
+  );
+  expect(conflictingSftpUser.status).toBe(404);
+
   await page.reload();
   await page.getByLabel("UUID del activo").fill(assetId);
   await page.getByRole("button", { name: "Consultar" }).click();
   await page.getByLabel("UUID del Agent").fill(agentId);
   await page.getByRole("button", { name: "Consultar Agent" }).click();
   await expect(page.getByRole("article", { name: "Estado del Agent" })).toContainText(initialized.publicKeyFingerprint);
+  await expect(page.getByRole("article", { name: "Estado del Agent" })).toContainText("ACTIVE");
+  await expect(page.getByRole("article", { name: "Conexión SFTP del Agent" })).not.toBeVisible();
 
   const persistedAgent = execFileSync("docker", [
     "exec",
@@ -109,7 +294,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
      JOIN identity.technical_identities i ON i.agent_id = a.id
      WHERE a.id = '${agentId}'`,
   ], { encoding: "utf8" }).trim();
-  expect(persistedAgent).toBe(`PENDING:${initialized.publicKeyFingerprint}:1:1`);
+  expect(persistedAgent).toBe(`ACTIVE:${initialized.publicKeyFingerprint}:2:1`);
 
   const missingCsrf = await page.evaluate(async ({ api, name }) => {
     const response = await fetch(`${api}/api/v1/assets`, {
@@ -123,10 +308,6 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   expect(missingCsrf.status).toBe(403);
   expect(missingCsrf.body.code).toBe("CSRF_INVALID");
 
-  const currentSession = await page.evaluate(async (api) => {
-    const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
-    return response.json();
-  }, backendUrl!);
   execFileSync("docker", [
     "exec",
     databaseContainer!,

@@ -159,7 +159,9 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
           {lookup.data && <AssetCard asset={lookup.data} label="Consulta por ID" />}
         </div>
       </div>
-      {selectedAsset && <AgentEnrollment assetId={selectedAsset.assetId} session={session} />}
+      {selectedAsset && (
+        <AgentEnrollment key={selectedAsset.assetId} assetId={selectedAsset.assetId} session={session} />
+      )}
     </section>
   );
 }

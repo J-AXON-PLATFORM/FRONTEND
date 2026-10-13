@@ -3,12 +3,19 @@ import { ApiError } from "@/features/auth/api";
 export type Agent = {
   agentId: string;
   assetId: string;
-  status: "PENDING";
+  status: "PENDING" | "ACTIVE";
   publicKeyRegistered: boolean;
   publicKeyFingerprint: string | null;
   createdAt: string;
   updatedAt: string;
   version: number;
+};
+
+export type AgentConnection = {
+  host: string;
+  port: number;
+  username: string;
+  publicHostKey: string;
 };
 
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
@@ -21,6 +28,16 @@ async function readAgent(response: Response): Promise<Agent> {
     throw new ApiError(response.status, problem);
   }
   return response.json() as Promise<Agent>;
+}
+
+async function readConnection(response: Response): Promise<AgentConnection> {
+  if (!response.ok) {
+    const problem = response.headers.get("content-type")?.includes("application/problem+json")
+      ? await response.json() as { code: string; correlationId: string; detail?: string }
+      : undefined;
+    throw new ApiError(response.status, problem);
+  }
+  return response.json() as Promise<AgentConnection>;
 }
 
 export async function preRegisterAgent(assetId: string, csrfToken: string): Promise<Agent> {
@@ -54,5 +71,16 @@ export async function registerAgentPublicKey(
       "X-CSRF-Token": csrfToken,
     },
     body: JSON.stringify({ publicKey }),
+  }));
+}
+
+export async function activateAgent(
+  agentId: string,
+  csrfToken: string,
+): Promise<AgentConnection> {
+  return readConnection(await fetch(`${apiUrl}/agents/${encodeURIComponent(agentId)}/activate`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrfToken },
   }));
 }

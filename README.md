@@ -1,6 +1,6 @@
 # J-AXON Frontend
 
-Aplicacion web de J-AXON con Next.js App Router, React y TypeScript. Implementa el login humano y la vista minima de sesion de `OLA1-IAM-001a`.
+Aplicacion web de J-AXON con Next.js App Router, React y TypeScript. Implementa login humano, Inventory minimo y enrolamiento Agent hasta activacion SFTP.
 
 La documentacion canonica general del proyecto vive en el directorio `doc/` del repositorio `BACKEND`.
 
@@ -45,7 +45,7 @@ npm run audit:production
 npm run audit:dependencies
 ```
 
-`verify` ejecuta lint, typecheck, pruebas y build en ese orden. `test:e2e:local` requiere Docker, Java 25 y el repositorio `backend` candidato en `../backend`; crea credenciales y PostgreSQL efimeros, ejecuta ambos candidatos y limpia solo sus recursos propios.
+`verify` ejecuta lint, typecheck, pruebas y build en ese orden. `test:e2e:local` requiere Docker, uv y los repositorios candidatos `backend` y `automation-collector` en los directorios hermanos. Construye SFTPGo Local/Test, crea credenciales, PostgreSQL y estados Agent efimeros, ejecuta los tres candidatos y limpia solo sus recursos propios.
 
 ## Estructura
 
