@@ -4,7 +4,13 @@ import { ApiError, type Session } from "@/features/auth/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
-import { getAgent, preRegisterAgent, registerAgentPublicKey, type Agent } from "./api";
+import {
+  activateAgent,
+  getAgent,
+  preRegisterAgent,
+  registerAgentPublicKey,
+  type Agent,
+} from "./api";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ED25519_PUBLIC_KEY = /^ssh-ed25519\s+[A-Za-z0-9+/]+={0,2}(?:\s+.*)?$/;
@@ -23,6 +29,7 @@ export function AgentEnrollment({
   const preRegistration = useMutation({
     mutationFn: () => preRegisterAgent(assetId, session.csrfToken),
     onSuccess: (agent) => {
+      activation.reset();
       setAgentIdValue(agent.agentId);
       setAgentId(agent.agentId);
     },
@@ -41,7 +48,22 @@ export function AgentEnrollment({
       setKeyValidation(false);
     },
   });
-  const authenticationError = [preRegistration.error, lookup.error, keyRegistration.error]
+  const activation = useMutation({
+    mutationFn: async () => {
+      const connection = await activateAgent(agentId, session.csrfToken);
+      const agent = await getAgent(agentId);
+      return { agent, connection };
+    },
+    onSuccess: ({ agent }) => {
+      queryClient.setQueryData(["agents", "agent", agent.agentId], agent);
+    },
+  });
+  const authenticationError = [
+    preRegistration.error,
+    lookup.error,
+    keyRegistration.error,
+    activation.error,
+  ]
     .find((error) => error instanceof ApiError && error.status === 401);
 
   useEffect(() => {
@@ -54,6 +76,7 @@ export function AgentEnrollment({
   function submitLookup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const candidate = agentIdValue.trim();
+    activation.reset();
     setAgentId(candidate);
     if (UUID_V4.test(candidate)) {
       void queryClient.invalidateQueries({ queryKey: ["agents", "agent", candidate] });
@@ -80,7 +103,7 @@ export function AgentEnrollment({
           <p className="sequence">Collector / identidad técnica</p>
           <h2 id="agent-title">Agent</h2>
         </div>
-        <p>Pre-registro y clave pública local. El Agent permanece PENDING y SFTP todavía no está disponible.</p>
+        <p>Pre-registro, clave pública y activación controlada del buzón SFTP del Agent.</p>
       </header>
 
       <div className="agent-grid">
@@ -148,6 +171,40 @@ export function AgentEnrollment({
             {keyRegistration.isPending ? "Registrando..." : "Registrar clave pública"}
           </button>
         </form>
+
+        {current?.status === "PENDING" && current.publicKeyRegistered && (
+          <div className="agent-step">
+            <div className="form-heading"><span>06</span><h3>Activar Agent</h3></div>
+            <p>Provisiona el buzón aislado y confirma la identidad del servidor SFTP.</p>
+            <button
+              type="button"
+              disabled={activation.isPending}
+              onClick={() => {
+                activation.reset();
+                activation.mutate();
+              }}
+            >
+              {activation.isPending ? "Activando..." : "Activar Agent"}
+            </button>
+            {activation.isError && (
+              <p className="form-error" role="alert">
+                {agentError(activation.error, "activar", true)}
+              </p>
+            )}
+          </div>
+        )}
+        {activation.data?.agent.agentId === agentId && (
+          <article className="agent-step connection-card" aria-label="Conexión SFTP del Agent">
+            <div className="form-heading"><span>OK</span><h3>Conexión SFTP</h3></div>
+            <p>Configura el Agent con esta host key obtenida por el canal autenticado.</p>
+            <dl>
+              <div><dt>Host</dt><dd>{activation.data.connection.host}</dd></div>
+              <div><dt>Puerto</dt><dd>{activation.data.connection.port}</dd></div>
+              <div><dt>Usuario</dt><dd>{activation.data.connection.username}</dd></div>
+              <div><dt>Host key</dt><dd><code>{activation.data.connection.publicHostKey}</code></dd></div>
+            </dl>
+          </article>
+        )}
       </div>
     </section>
   );
@@ -158,7 +215,7 @@ function AgentCard({ agent }: Readonly<{ agent: Agent }>) {
     <article className="agent-card" aria-label="Estado del Agent">
       <div className="asset-card-title">
         <h3>{agent.agentId}</h3>
-        <span className="agent-status">{agent.status}</span>
+        <span className={`agent-status agent-status-${agent.status.toLowerCase()}`}>{agent.status}</span>
       </div>
       <dl>
         <div><dt>Activo</dt><dd>{agent.assetId}</dd></div>
@@ -170,13 +227,17 @@ function AgentCard({ agent }: Readonly<{ agent: Agent }>) {
   );
 }
 
-function agentError(error: Error | null, action: string) {
+function agentError(error: Error | null, action: string, activating = false) {
   if (!(error instanceof ApiError)) {
     return `No fue posible ${action} el Agent. El servicio no está disponible.`;
   }
   if (error.status === 403) return "La sesión no autoriza esta operación.";
   if (error.status === 404) return "No existe el activo o Agent indicado.";
-  if (error.status === 409) return "La clave ya pertenece a otro Agent o no puede sustituirse.";
-  if (error.status === 400 || error.status === 422) return "Revisa el UUID y la clave pública Ed25519.";
+  if (error.status === 409) return activating
+    ? "El Agent ya no puede activarse o el aprovisionamiento presenta un conflicto. Reconsulta su estado."
+    : "La clave ya pertenece a otro Agent o no puede sustituirse.";
+  if (error.status === 400 || error.status === 422) return activating
+    ? "Los requisitos de activación no son válidos."
+    : "Revisa el UUID y la clave pública Ed25519.";
   return `No fue posible ${action} el Agent. El servicio no está disponible.`;
 }

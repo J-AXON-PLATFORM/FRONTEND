@@ -6,7 +6,10 @@ backend_dir="${JAXON_BACKEND_DIR:-${frontend_dir}/../backend}"
 automation_dir="${JAXON_AUTOMATION_DIR:-${frontend_dir}/../automation-collector}"
 owner="jaxon-auth-e2e-$RANDOM-$$"
 database_container="${owner}-postgres"
+sftpgo_container="${owner}-sftpgo"
+backend_container="${owner}-backend"
 database_image="jaxon-postgres-pgvector-test:${owner}"
+backend_image="jaxon-backend:${owner}"
 backend_port="${JAXON_E2E_BACKEND_PORT:-$((18000 + RANDOM % 1000))}"
 frontend_port="${JAXON_E2E_FRONTEND_PORT:-$((13000 + RANDOM % 1000))}"
 work_dir="$(mktemp -d)"
@@ -19,7 +22,10 @@ cleanup() {
   if [[ -n "${frontend_pid}" ]]; then wait "${frontend_pid}" 2>/dev/null || true; fi
   if [[ -n "${backend_pid}" ]]; then wait "${backend_pid}" 2>/dev/null || true; fi
   docker rm --force "${database_container}" >/dev/null 2>&1 || true
+  docker rm --force "${sftpgo_container}" >/dev/null 2>&1 || true
+  docker rm --force "${backend_container}" >/dev/null 2>&1 || true
   docker image rm "${database_image}" >/dev/null 2>&1 || true
+  docker image rm "${backend_image}" >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
 }
 trap cleanup EXIT
@@ -45,8 +51,29 @@ docker run --detach --rm --name "${database_container}" \
   --env POSTGRES_USER=jaxon_e2e \
   --env POSTGRES_PASSWORD="db-${owner}" \
   "${database_image}" >/dev/null
+"${backend_dir}/docker/sftpgo/build-local.sh"
+docker run --detach --rm --name "${sftpgo_container}" \
+  --label "com.jaxon.resource-owner=${owner}" \
+  --publish 127.0.0.1::2022 \
+  --publish 127.0.0.1::8080 \
+  --env SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=true \
+  --env SFTPGO_DEFAULT_ADMIN_USERNAME=jaxon-e2e-provisioner \
+  --env SFTPGO_DEFAULT_ADMIN_PASSWORD="sftp-${owner}" \
+  --env SFTPGO_SFTPD__ENABLED_SSH_COMMANDS= \
+  --env SFTPGO_SFTPD__PASSWORD_AUTHENTICATION=false \
+  --env SFTPGO_SFTPD__KEYBOARD_INTERACTIVE_AUTHENTICATION=false \
+  jaxon-sftpgo:2.7.6-local >/dev/null
 
 database_port="$(docker port "${database_container}" 5432/tcp | cut -d: -f2)"
+sftpgo_port="$(docker port "${sftpgo_container}" 2022/tcp | cut -d: -f2)"
+sftpgo_api_port="$(docker port "${sftpgo_container}" 8080/tcp | cut -d: -f2)"
+for _ in $(seq 1 30); do
+  if curl --fail --silent "http://localhost:${sftpgo_api_port}/healthz" >/dev/null; then break; fi
+  sleep 1
+done
+curl --fail --silent "http://localhost:${sftpgo_api_port}/healthz" >/dev/null
+sftpgo_host_key="$(ssh-keyscan -p "${sftpgo_port}" -t ed25519 127.0.0.1 2>/dev/null | cut -d' ' -f2-3)"
+test -n "${sftpgo_host_key}"
 export JAXON_E2E_USERNAME="E2E.Operator"
 export JAXON_E2E_PASSWORD="E2e-$(tr -d '-' </proc/sys/kernel/random/uuid)-Aa9!"
 
@@ -57,13 +84,37 @@ export JAXON_IDENTITY_BOOTSTRAP_ENABLED=true
 export JAXON_IDENTITY_BOOTSTRAP_USERNAME="${JAXON_E2E_USERNAME}"
 export JAXON_IDENTITY_BOOTSTRAP_PASSWORD="${JAXON_E2E_PASSWORD}"
 export JAXON_FRONTEND_ORIGIN="http://localhost:${frontend_port}"
+export JAXON_SFTP_ENABLED=true
+export JAXON_SFTPGO_ADMIN_API_URL="http://localhost:${sftpgo_api_port}/api/v2"
+export JAXON_SFTPGO_ADMIN_USERNAME=jaxon-e2e-provisioner
+export JAXON_SFTPGO_ADMIN_PASSWORD="sftp-${owner}"
+export JAXON_SFTP_PUBLIC_HOST=127.0.0.1
+export JAXON_SFTP_PUBLIC_PORT="${sftpgo_port}"
+export JAXON_SFTP_PUBLIC_HOST_KEY="${sftpgo_host_key}"
 export SERVER_PORT="${backend_port}"
-setsid bash -c 'cd "$1" && exec ./mvnw --batch-mode --no-transfer-progress spring-boot:run' \
-  _ "${backend_dir}" >"${work_dir}/backend.log" 2>&1 &
-backend_pid=$!
+docker build --tag "${backend_image}" "${backend_dir}"
+docker run --detach --rm --name "${backend_container}" \
+  --label "com.jaxon.resource-owner=${owner}" \
+  --network host \
+  --env JAXON_DB_URL \
+  --env JAXON_DB_USERNAME \
+  --env JAXON_DB_PASSWORD \
+  --env JAXON_IDENTITY_BOOTSTRAP_ENABLED \
+  --env JAXON_IDENTITY_BOOTSTRAP_USERNAME \
+  --env JAXON_IDENTITY_BOOTSTRAP_PASSWORD \
+  --env JAXON_FRONTEND_ORIGIN \
+  --env JAXON_SFTP_ENABLED \
+  --env JAXON_SFTPGO_ADMIN_API_URL \
+  --env JAXON_SFTPGO_ADMIN_USERNAME \
+  --env JAXON_SFTPGO_ADMIN_PASSWORD \
+  --env JAXON_SFTP_PUBLIC_HOST \
+  --env JAXON_SFTP_PUBLIC_PORT \
+  --env JAXON_SFTP_PUBLIC_HOST_KEY \
+  --env SERVER_PORT \
+  "${backend_image}" >/dev/null
 
 for _ in $(seq 1 90); do
-  kill -0 "${backend_pid}" 2>/dev/null || { cat "${work_dir}/backend.log" >&2; exit 1; }
+  docker inspect "${backend_container}" >/dev/null 2>&1 || { docker logs "${backend_container}" >&2; exit 1; }
   if curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness" >/dev/null; then break; fi
   sleep 1
 done

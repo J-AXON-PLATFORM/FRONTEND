@@ -196,6 +196,11 @@ h1 {
 .agent-card { border: 1px solid var(--line); padding: 1.2rem; background: #f7f4ea; }
 .agent-card h3 { margin: 0; font-family: ui-monospace, monospace; font-size: 1rem; overflow-wrap: anywhere; }
 .agent-status { border: 1px solid #6c5d29; padding: 0.4rem 0.55rem; color: #6c5d29; font-family: ui-monospace, monospace; font-size: 0.7rem; font-weight: 800; }
+.agent-status-active { border-color: #28613d; color: #28613d; }
+.connection-card dl { display: grid; gap: 0.65rem; margin: 0; }
+.connection-card dl div { display: grid; grid-template-columns: 5rem 1fr; gap: 0.75rem; }
+.connection-card dt { color: var(--muted); font-weight: 700; }
+.connection-card dd { margin: 0; overflow-wrap: anywhere; }
 .agent-card dl { margin: 1rem 0 0; }
 .agent-card dl div { display: grid; gap: 0.25rem; border-top: 1px solid var(--line); padding: 0.65rem 0; }
 .agent-card dt { color: var(--muted); font-size: 0.72rem; font-weight: 750; text-transform: uppercase; }
