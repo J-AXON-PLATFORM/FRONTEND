@@ -9,6 +9,8 @@ import {
   createAsset,
   getAsset,
   getAssetTechnicalState,
+  openTechnicalStateEvents,
+  parseTechnicalStateUpdatedEvent,
   type Asset,
   type AssetStatus,
   type AssetType,
@@ -60,6 +62,7 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
   });
   const authenticationError = [creation.error, lookup.error, technicalState.error]
     .find((error) => error instanceof ApiError && error.status === 401);
+  const canOperate = session.roles.includes("IT_OPERATOR");
 
   useEffect(() => {
     if (authenticationError) {
@@ -68,7 +71,29 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
     }
   }, [authenticationError, queryClient, router]);
 
-  if (!session.roles.includes("IT_OPERATOR")) {
+  useEffect(() => {
+    const assetId = selectedAsset?.assetId;
+    if (!assetId || !canOperate || typeof EventSource === "undefined") {
+      return;
+    }
+    const source = openTechnicalStateEvents(assetId);
+    const handleUpdate = (event: MessageEvent<string>) => {
+      const update = parseTechnicalStateUpdatedEvent(event.data);
+      if (update?.assetId === assetId && event.lastEventId === update.eventId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["collector", session.userId, "asset-technical-state", assetId],
+          exact: true,
+        });
+      }
+    };
+    source.addEventListener("ASSET_TECHNICAL_STATE_UPDATED", handleUpdate);
+    return () => {
+      source.removeEventListener("ASSET_TECHNICAL_STATE_UPDATED", handleUpdate);
+      source.close();
+    };
+  }, [canOperate, queryClient, selectedAsset?.assetId, session.userId]);
+
+  if (!canOperate) {
     return (
       <section className="permission-panel" aria-labelledby="inventory-title">
         <p className="sequence">Inventory / acceso restringido</p>

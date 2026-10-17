@@ -58,6 +58,14 @@ export type TechnicalObservation = {
   }>;
 };
 
+export type TechnicalStateUpdatedEvent = {
+  eventId: string;
+  eventType: "ASSET_TECHNICAL_STATE_UPDATED";
+  occurredAt: string;
+  assetId: string;
+  correlationId: string;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
 
 async function readAsset(response: Response): Promise<Asset> {
@@ -103,4 +111,38 @@ export async function getAssetTechnicalState(assetId: string): Promise<Technical
     `${apiUrl}/assets/${encodeURIComponent(assetId)}/technical-state`,
     { credentials: "include" },
   ));
+}
+
+export function openTechnicalStateEvents(assetId: string): EventSource {
+  return new EventSource(
+    `${apiUrl}/assets/${encodeURIComponent(assetId)}/technical-state/events`,
+    { withCredentials: true },
+  );
+}
+
+export function parseTechnicalStateUpdatedEvent(data: string): TechnicalStateUpdatedEvent | undefined {
+  try {
+    const candidate = JSON.parse(data) as Record<string, unknown>;
+    const keys = Object.keys(candidate).sort();
+    if (
+      keys.join(",") !== "assetId,correlationId,eventId,eventType,occurredAt"
+      || candidate.eventType !== "ASSET_TECHNICAL_STATE_UPDATED"
+      || !isUuidV4(candidate.eventId)
+      || !isUuidV4(candidate.assetId)
+      || !isUuidV4(candidate.correlationId)
+      || typeof candidate.occurredAt !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(candidate.occurredAt)
+      || Number.isNaN(Date.parse(candidate.occurredAt))
+    ) {
+      return undefined;
+    }
+    return candidate as TechnicalStateUpdatedEvent;
+  } catch {
+    return undefined;
+  }
+}
+
+function isUuidV4(value: unknown): value is string {
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
