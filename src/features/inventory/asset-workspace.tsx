@@ -8,9 +8,11 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   createAsset,
   getAsset,
+  getAssetTechnicalState,
   type Asset,
   type AssetStatus,
   type AssetType,
+  type TechnicalState,
 } from "./api";
 
 const ASSET_TYPES: { value: AssetType; label: string }[] = [
@@ -44,14 +46,20 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
     },
   });
   const lookup = useQuery({
-    queryKey: ["inventory", "asset", lookupId],
+    queryKey: ["inventory", session.userId, "asset", lookupId],
     queryFn: () => getAsset(lookupId),
     enabled: UUID_V4.test(lookupId),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 1,
   });
-  const authenticationError = [creation.error, lookup.error]
+  const selectedAsset = lookupId ? lookup.data : createdAsset;
+  const technicalState = useQuery({
+    queryKey: ["collector", session.userId, "asset-technical-state", selectedAsset?.assetId],
+    queryFn: () => getAssetTechnicalState(selectedAsset!.assetId),
+    enabled: Boolean(selectedAsset),
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 1,
+  });
+  const authenticationError = [creation.error, lookup.error, technicalState.error]
     .find((error) => error instanceof ApiError && error.status === 401);
-  const selectedAsset = lookup.data ?? createdAsset;
 
   useEffect(() => {
     if (authenticationError) {
@@ -83,7 +91,7 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
       return;
     }
     setLookupId(candidate);
-    void queryClient.invalidateQueries({ queryKey: ["inventory", "asset", candidate] });
+    void queryClient.invalidateQueries({ queryKey: ["inventory", session.userId, "asset", candidate] });
   }
 
   return (
@@ -160,7 +168,16 @@ export function AssetWorkspace({ session }: Readonly<{ session: Session }>) {
         </div>
       </div>
       {selectedAsset && (
-        <AgentEnrollment key={selectedAsset.assetId} assetId={selectedAsset.assetId} session={session} />
+        <>
+          <TechnicalStatePanel
+            state={technicalState.data}
+            error={technicalState.error}
+            loading={technicalState.isLoading}
+            refreshing={technicalState.isFetching && !technicalState.isLoading}
+            onRefresh={() => void technicalState.refetch()}
+          />
+          <AgentEnrollment key={selectedAsset.assetId} assetId={selectedAsset.assetId} session={session} />
+        </>
       )}
     </section>
   );
@@ -170,8 +187,9 @@ function AssetCard({ asset, label }: Readonly<{ asset: Asset; label: string }>) 
   return (
     <article className="asset-card" aria-label={label}>
       <p className="sequence">{label}</p>
+      <h3 className="record-kind">Información oficial del activo</h3>
       <div className="asset-card-title">
-        <h3>{asset.name}</h3>
+        <h4>{asset.name}</h4>
         <span className={`asset-status asset-status-${asset.status.toLowerCase()}`}>{asset.status}</span>
       </div>
       <dl>
@@ -182,6 +200,100 @@ function AssetCard({ asset, label }: Readonly<{ asset: Asset; label: string }>) 
       </dl>
     </article>
   );
+}
+
+function TechnicalStatePanel({
+  state,
+  error,
+  loading,
+  refreshing,
+  onRefresh,
+}: Readonly<{
+  state?: TechnicalState;
+  error: Error | null;
+  loading: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+}>) {
+  return (
+    <section className="technical-state" aria-labelledby="technical-state-title">
+      <header className="technical-state-heading">
+        <div>
+          <p className="sequence">Collector / observación</p>
+          <h3 id="technical-state-title">Información técnica observada</h3>
+        </div>
+        <button type="button" onClick={onRefresh} disabled={loading || refreshing}>
+          {refreshing ? "Actualizando..." : "Actualizar información técnica"}
+        </button>
+      </header>
+      {error && <p className="form-error" role="alert">{technicalErrorMessage(error)}</p>}
+      <div aria-live="polite">
+        {loading && <p className="result-status">Consultando información técnica observada...</p>}
+        {!loading && !error && state?.latestObservation === null && (
+          <p className="technical-empty">Aún no hay información técnica observada para este activo.</p>
+        )}
+        {!loading && !error && state?.latestObservation && (
+          <TechnicalObservationCard state={state} />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TechnicalObservationCard({ state }: Readonly<{ state: TechnicalState }>) {
+  const observation = state.latestObservation!;
+  return (
+    <article className="technical-card" aria-label="Última observación técnica">
+      <dl className="technical-facts">
+        <div><dt>Hostname observado</dt><dd>{observation.hostname}</dd></div>
+        <div><dt>Sistema operativo</dt><dd>{observation.operatingSystem.name} {observation.operatingSystem.version} ({observation.operatingSystem.family})</dd></div>
+        <div><dt>Arquitectura</dt><dd>{observation.architecture}</dd></div>
+        <div><dt>CPU lógicas</dt><dd>{observation.logicalCpuCount}</dd></div>
+        <div><dt>Memoria total</dt><dd>{formatBytes(observation.memoryBytes)}</dd></div>
+        <div><dt>Último contacto</dt><dd>{formatUtc(state.lastSeenAt)}</dd></div>
+        <div><dt>Último snapshot</dt><dd>{formatUtc(state.lastSnapshotAt)}</dd></div>
+        <div><dt>Capturado</dt><dd>{formatUtc(observation.capturedAt)}</dd></div>
+        <div><dt>ID del snapshot</dt><dd>{observation.snapshotId}</dd></div>
+      </dl>
+      <div className="storage-observations">
+        <h4>Almacenamiento observado</h4>
+        <ul>
+          {observation.storageVolumes.map((volume, index) => (
+            <li key={`${volume.name}-${volume.totalBytes}-${index}`}>
+              <strong>{volume.name}</strong>
+              <span>{formatBytes(volume.availableBytes)} disponibles de {formatBytes(volume.totalBytes)}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </article>
+  );
+}
+
+function formatUtc(value: string | null) {
+  return value ? `${new Date(value).toLocaleString("es-ES", { timeZone: "UTC" })} UTC` : "Sin datos";
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let amount = value / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index];
+  }
+  return `${amount.toLocaleString("es-ES", { maximumFractionDigits: 1 })} ${unit}`;
+}
+
+function technicalErrorMessage(error: Error | null) {
+  if (error instanceof ApiError && error.status === 403) {
+    return "La sesión no autoriza consultar la información técnica observada.";
+  }
+  if (error instanceof ApiError && error.status === 404) {
+    return "El activo ya no está disponible. Vuelve a consultar su ficha oficial.";
+  }
+  return "No fue posible consultar la información técnica observada. El servicio no está disponible.";
 }
 
 function errorMessage(error: Error | null, action: "crear" | "consultar") {

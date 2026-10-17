@@ -32,6 +32,32 @@ export type AssetCreateInput = {
   status: AssetStatus;
 };
 
+export type TechnicalState = {
+  assetId: string;
+  lastSeenAt: string | null;
+  lastSnapshotAt: string | null;
+  latestObservation: TechnicalObservation | null;
+};
+
+export type TechnicalObservation = {
+  snapshotId: string;
+  capturedAt: string;
+  hostname: string;
+  operatingSystem: {
+    family: "WINDOWS" | "LINUX" | "MACOS" | "OTHER";
+    name: string;
+    version: string;
+  };
+  architecture: "X86_64" | "X86" | "ARM64" | "ARM32" | "OTHER";
+  logicalCpuCount: number;
+  memoryBytes: number;
+  storageVolumes: Array<{
+    name: string;
+    totalBytes: number;
+    availableBytes: number;
+  }>;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
 
 async function readAsset(response: Response): Promise<Asset> {
@@ -42,6 +68,16 @@ async function readAsset(response: Response): Promise<Asset> {
     throw new ApiError(response.status, problem);
   }
   return response.json() as Promise<Asset>;
+}
+
+async function readTechnicalState(response: Response): Promise<TechnicalState> {
+  if (!response.ok) {
+    const problem = response.headers.get("content-type")?.includes("application/problem+json")
+      ? await response.json() as { code: string; correlationId: string; detail?: string }
+      : undefined;
+    throw new ApiError(response.status, problem);
+  }
+  return response.json() as Promise<TechnicalState>;
 }
 
 export async function createAsset(input: AssetCreateInput, csrfToken: string): Promise<Asset> {
@@ -60,4 +96,11 @@ export async function getAsset(assetId: string): Promise<Asset> {
   return readAsset(await fetch(`${apiUrl}/assets/${encodeURIComponent(assetId)}`, {
     credentials: "include",
   }));
+}
+
+export async function getAssetTechnicalState(assetId: string): Promise<TechnicalState> {
+  return readTechnicalState(await fetch(
+    `${apiUrl}/assets/${encodeURIComponent(assetId)}/technical-state`,
+    { credentials: "include" },
+  ));
 }

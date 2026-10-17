@@ -1,11 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync } from "node:fs";
+import { chmodSync, cpSync, writeFileSync } from "node:fs";
 
 const username = process.env.JAXON_E2E_USERNAME;
 const password = process.env.JAXON_E2E_PASSWORD;
 const backendUrl = process.env.JAXON_E2E_BACKEND_URL;
 const databaseContainer = process.env.JAXON_E2E_DATABASE_CONTAINER;
+const sftpGoContainer = process.env.JAXON_E2E_SFTPGO_CONTAINER;
 const automationDir = process.env.JAXON_E2E_AUTOMATION_DIR;
 const agentStateDir = process.env.JAXON_E2E_AGENT_STATE_DIR;
 const sftpGoApiUrl = process.env.JAXON_SFTPGO_ADMIN_API_URL;
@@ -13,7 +14,7 @@ const sftpGoAdminUsername = process.env.JAXON_SFTPGO_ADMIN_USERNAME;
 const sftpGoAdminPassword = process.env.JAXON_SFTPGO_ADMIN_PASSWORD;
 
 test.beforeAll(() => {
-  if (!username || !password || !backendUrl || !databaseContainer || !automationDir
+  if (!username || !password || !backendUrl || !databaseContainer || !sftpGoContainer || !automationDir
     || !agentStateDir || !sftpGoApiUrl || !sftpGoAdminUsername || !sftpGoAdminPassword) {
     throw new Error("E2E identity, backend, database, SFTPGo, and Agent configuration are required");
   }
@@ -131,6 +132,80 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   ], { encoding: "utf8" });
   expect(JSON.parse(verifiedOutput).status).toBe("verified");
   await expect(page.getByRole("button", { name: "Activar Agent" })).not.toBeVisible();
+  await expect(page.getByText("Aún no hay información técnica observada para este activo.")).toBeVisible();
+
+  const snapshotOutput = execFileSync("uv", [
+    "run",
+    "--project",
+    automationDir!,
+    "--locked",
+    "jaxon-agent",
+    "send-snapshot",
+    "--state-dir",
+    agentStateDir!,
+  ], { encoding: "utf8" });
+  const sentSnapshot = JSON.parse(snapshotOutput) as {
+    messageId: string;
+    snapshotId: string;
+    capturedAt: string;
+    remotePath: string;
+    status: string;
+  };
+  expect(sentSnapshot.status).toBe("SENT");
+  expect(sentSnapshot.remotePath).toBe(`/snapshots/${sentSnapshot.messageId}.json`);
+
+  const technicalState = async (id: string) => page.evaluate(async ({ api, id }) => {
+    const response = await fetch(`${api}/api/v1/assets/${id}/technical-state`, { credentials: "include" });
+    return { status: response.status, body: await response.json() };
+  }, { api: backendUrl!, id });
+  await expect.poll(async () => (await technicalState(assetId)).body.latestObservation?.snapshotId, {
+    timeout: 30_000,
+  }).toBe(sentSnapshot.snapshotId);
+  await page.getByRole("button", { name: "Actualizar información técnica" }).click();
+  const observedCard = page.getByRole("article", { name: "Última observación técnica" });
+  await expect(observedCard).toContainText(sentSnapshot.snapshotId);
+  await expect(observedCard).toContainText("LINUX");
+  await expect(page.getByRole("heading", { name: "Información oficial del activo" }).last()).toBeVisible();
+
+  const partialMessageId = "9d0d4d9b-4f40-4e15-88ae-451824e5ca92";
+  const knownHosts = `${agentStateDir}/known_hosts_e2e`;
+  const partialPayload = `${agentStateDir}/partial-e2e.json`;
+  const acceptedPayload = `${agentStateDir}/accepted-e2e.json`;
+  writeFileSync(knownHosts, `[127.0.0.1]:${connectionResponse.port} ${connectionResponse.publicHostKey}\n`, { mode: 0o600 });
+  writeFileSync(partialPayload, "not-a-final-snapshot", { mode: 0o600 });
+  execFileSync("docker", [
+    "cp",
+    `${sftpGoContainer}:/srv/sftpgo/data/agent-${agentId}-snapshots/${sentSnapshot.messageId}.json`,
+    acceptedPayload,
+  ]);
+  execFileSync("docker", [
+    "run", "--rm", "--volume", `${acceptedPayload}:/fixture`,
+    "alpine:3.22", "chmod", "0644", "/fixture",
+  ]);
+  const partialUpload = spawnSync("sftp", [
+    "-b", "-", "-P", String(connectionResponse.port),
+    "-i", `${agentStateDir}/id_ed25519`,
+    "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+    "-o", `UserKnownHostsFile=${knownHosts}`,
+    `${connectionResponse.username}@127.0.0.1`,
+  ], { encoding: "utf8", input: `put ${partialPayload} /snapshots/${partialMessageId}.json.part\n` });
+  expect(partialUpload.status).toBe(0);
+  await page.waitForTimeout(2_500);
+  expect(execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--tuples-only", "--no-align",
+    "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT count(*) FROM collector.snapshot_ingestions WHERE claimed_message_id = '${partialMessageId}'`,
+  ], { encoding: "utf8" }).trim()).toBe("0");
+  expect(execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--tuples-only", "--no-align",
+    "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT count(*) FROM collector.accepted_snapshots WHERE message_id = '${sentSnapshot.messageId}'`,
+  ], { encoding: "utf8" }).trim()).toBe("1");
+  expect(execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--tuples-only", "--no-align",
+    "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT count(*) FROM collector.snapshot_ingestions WHERE claimed_message_id = '${sentSnapshot.messageId}' AND status = 'ACCEPTED'`,
+  ], { encoding: "utf8" }).trim()).toBe("1");
 
   const currentSession = await page.evaluate(async (api) => {
     const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
@@ -185,6 +260,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const crossUserStateDir = `${agentStateDir}-cross-user`;
   cpSync(secondStateDir, wrongHostStateDir, { recursive: true });
   cpSync(secondStateDir, crossUserStateDir, { recursive: true });
+  chmodSync(wrongHostStateDir, 0o700);
+  chmodSync(crossUserStateDir, 0o700);
   execFileSync("uv", [
     "run", "--project", automationDir!, "--locked", "jaxon-agent", "configure-sftp",
     "--state-dir", secondStateDir,
@@ -197,6 +274,32 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "run", "--project", automationDir!, "--locked", "jaxon-agent", "verify-sftp",
     "--state-dir", secondStateDir,
   ], { encoding: "utf8" })).status).toBe("verified");
+  const secondSnapshot = JSON.parse(execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-agent", "send-snapshot",
+    "--state-dir", secondStateDir,
+  ], { encoding: "utf8" })) as { snapshotId: string; status: string };
+  expect(secondSnapshot.status).toBe("SENT");
+  await expect.poll(async () => (
+    await technicalState(secondAsset.body.assetId as string)
+  ).body.latestObservation?.snapshotId, { timeout: 30_000 }).toBe(secondSnapshot.snapshotId);
+  expect(secondSnapshot.snapshotId).not.toBe(sentSnapshot.snapshotId);
+  expect((await technicalState(assetId)).body.latestObservation.snapshotId).toBe(sentSnapshot.snapshotId);
+
+  const secondKnownHosts = `${secondStateDir}/known_hosts_e2e`;
+  writeFileSync(secondKnownHosts, `[127.0.0.1]:${secondActivation.body.port} ${secondActivation.body.publicHostKey}\n`, { mode: 0o600 });
+  const crossAgentUpload = spawnSync("sftp", [
+    "-b", "-", "-P", String(secondActivation.body.port),
+    "-i", `${secondStateDir}/id_ed25519`,
+    "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+    "-o", `UserKnownHostsFile=${secondKnownHosts}`,
+    `${secondActivation.body.username}@127.0.0.1`,
+  ], { encoding: "utf8", input: `put ${acceptedPayload} /snapshots/${sentSnapshot.messageId}.json\n` });
+  expect(crossAgentUpload.status).toBe(0);
+  await expect.poll(() => execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--tuples-only", "--no-align",
+    "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT reason_code FROM collector.snapshot_ingestions WHERE claimed_agent_id = '${secondAgentId}' AND claimed_message_id = '${sentSnapshot.messageId}' ORDER BY received_at DESC LIMIT 1`,
+  ], { encoding: "utf8" }).trim(), { timeout: 30_000 }).toBe("PATH_AGENT_ID_MISMATCH");
 
   execFileSync("uv", [
     "run", "--project", automationDir!, "--locked", "jaxon-agent", "configure-sftp",
@@ -333,6 +436,9 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   }, { api: backendUrl!, csrf: currentSession.csrfToken as string });
   expect(forbidden.status).toBe(403);
   expect(forbidden.body.code).toBe("ACCESS_DENIED");
+  await page.getByRole("button", { name: "Actualizar información técnica" }).click();
+  await expect(page.getByText("La sesión no autoriza consultar la información técnica observada.")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Última observación técnica" })).not.toBeVisible();
 
   await page.context().clearCookies();
   await page.goto("/");
