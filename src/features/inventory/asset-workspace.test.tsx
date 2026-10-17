@@ -25,6 +25,22 @@ const asset = {
   version: 0,
 };
 
+const technicalState = {
+  assetId: asset.assetId,
+  lastSeenAt: "2026-10-16T18:01:00Z",
+  lastSnapshotAt: "2026-10-16T18:00:00Z",
+  latestObservation: {
+    snapshotId: "32ab59f7-5e91-4a27-9107-e644839c4852",
+    capturedAt: "2026-10-16T18:00:00Z",
+    hostname: "workstation-042.example.internal",
+    operatingSystem: { family: "LINUX", name: "Example Linux", version: "1.0" },
+    architecture: "X86_64",
+    logicalCpuCount: 8,
+    memoryBytes: 17179869184,
+    storageVolumes: [{ name: "/", totalBytes: 512000000000, availableBytes: 320000000000 }],
+  },
+};
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -53,6 +69,15 @@ describe("AssetWorkspace", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(asset), {
         status: 200,
         headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        assetId: asset.assetId,
+        lastSeenAt: null,
+        lastSnapshotAt: null,
+        latestObservation: null,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
       }));
     vi.stubGlobal("fetch", fetchMock);
     renderWorkspace();
@@ -64,7 +89,8 @@ describe("AssetWorkspace", () => {
     expect(within(created).getByRole("heading", { name: "Workstation 042" })).toBeDefined();
     const queried = await screen.findByRole("article", { name: "Consulta por ID" });
     expect(within(queried).getByText(asset.assetId)).toBeDefined();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText("Aún no hay información técnica observada para este activo.")).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/assets");
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "POST",
@@ -75,6 +101,8 @@ describe("AssetWorkspace", () => {
       },
     });
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/assets/${asset.assetId}`);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(`/api/v1/assets/${asset.assetId}/technical-state`);
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ credentials: "include" });
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
   });
@@ -109,5 +137,75 @@ describe("AssetWorkspace", () => {
 
     expect(screen.getByRole("alert").textContent).toContain("UUIDv4 válido");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("separates official and observed data and refreshes the technical state", async () => {
+    let technicalRequests = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/assets/${asset.assetId}/technical-state`)) {
+        technicalRequests += 1;
+        return new Response(JSON.stringify(technicalState), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith(`/assets/${asset.assetId}`)) {
+        return new Response(JSON.stringify(asset), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del activo"), { target: { value: asset.assetId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar" }));
+
+    expect(await screen.findByRole("heading", { name: "Información oficial del activo" })).toBeDefined();
+    const observed = await screen.findByRole("article", { name: "Última observación técnica" });
+    expect(within(observed).getByText("workstation-042.example.internal")).toBeDefined();
+    expect(within(observed).getByText("Example Linux 1.0 (LINUX)")).toBeDefined();
+    expect(within(observed).getByText(technicalState.latestObservation.snapshotId)).toBeDefined();
+    expect(within(observed).getByText(/16 GiB/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar información técnica" }));
+    await screen.findByRole("article", { name: "Última observación técnica" });
+    expect(technicalRequests).toBe(2);
+  });
+
+  it("hides cached observations when a refresh loses authorization", async () => {
+    let technicalRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/assets/${asset.assetId}/technical-state`)) {
+        technicalRequests += 1;
+        if (technicalRequests === 1) {
+          return new Response(JSON.stringify(technicalState), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ code: "ACCESS_DENIED", correlationId: session.userId }), {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        });
+      }
+      return new Response(JSON.stringify(asset), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+    renderWorkspace();
+    fireEvent.change(screen.getByLabelText("UUID del activo"), { target: { value: asset.assetId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar" }));
+    await screen.findByText("workstation-042.example.internal");
+
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar información técnica" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("no autoriza consultar");
+    expect(screen.queryByText("workstation-042.example.internal")).toBeNull();
   });
 });

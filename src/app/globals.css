@@ -260,7 +260,8 @@ h1 {
 .result-status { margin: 0; color: var(--muted); }
 .asset-card { border: 1px solid var(--line); padding: clamp(1.25rem, 4vw, 2.25rem); background: var(--panel); }
 .asset-card-title { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
-.asset-card h3 { margin: 0.7rem 0 1.5rem; font-size: clamp(1.8rem, 5vw, 3.2rem); letter-spacing: -0.05em; overflow-wrap: anywhere; }
+.asset-card .record-kind { margin: 0.65rem 0 0; color: var(--muted); font-size: 0.85rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.asset-card h4 { margin: 0.7rem 0 1.5rem; font-size: clamp(1.8rem, 5vw, 3.2rem); letter-spacing: -0.05em; overflow-wrap: anywhere; }
 .asset-status { border: 1px solid currentColor; padding: 0.4rem 0.55rem; font-family: ui-monospace, monospace; font-size: 0.7rem; font-weight: 800; }
 .asset-status-active { color: #176341; }
 .asset-status-inactive { color: #6c5d29; }
@@ -270,6 +271,23 @@ h1 {
 .asset-card dd { margin: 0; overflow-wrap: anywhere; }
 .permission-panel { border-left: 0.5rem solid var(--signal); padding: clamp(1.5rem, 5vw, 3rem); background: var(--panel); }
 .permission-panel p:last-child { max-width: 42rem; color: var(--muted); line-height: 1.6; }
+.technical-state { margin-top: 1rem; border-top: 0.45rem solid #247fbb; padding: clamp(1.25rem, 4vw, 2.25rem); background: #edf3f4; }
+.technical-state-heading { display: flex; align-items: end; justify-content: space-between; gap: 1.5rem; }
+.technical-state-heading h3 { margin: 0.35rem 0 0; font-size: clamp(1.7rem, 4vw, 2.8rem); letter-spacing: -0.045em; }
+.technical-state-heading button { min-height: 2.9rem; border: 1px solid var(--dark); padding: 0.65rem 0.9rem; color: var(--dark); background: transparent; font-weight: 800; cursor: pointer; }
+.technical-state-heading button:hover:not(:disabled) { color: white; background: var(--dark); }
+.technical-state-heading button:disabled { cursor: wait; opacity: 0.6; }
+.technical-empty { border-left: 0.25rem solid #247fbb; margin: 1.5rem 0 0; padding: 1rem; color: var(--muted); background: var(--panel); }
+.technical-card { margin-top: 1.5rem; }
+.technical-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--line); }
+.technical-facts div { min-width: 0; padding: 1rem; background: var(--panel); }
+.technical-facts dt { color: var(--muted); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.technical-facts dd { margin: 0.35rem 0 0; overflow-wrap: anywhere; }
+.storage-observations { margin-top: 1.5rem; }
+.storage-observations h4 { margin: 0 0 0.75rem; }
+.storage-observations ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.storage-observations li { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 0.7rem 0; overflow-wrap: anywhere; }
+.storage-observations span { color: var(--muted); text-align: right; }
 
 @media (max-width: 48rem) {
   .auth-shell { grid-template-columns: 1fr; }
@@ -284,6 +302,10 @@ h1 {
   .lookup-control { grid-template-columns: 1fr; gap: 0.65rem; }
   .asset-card-title { display: grid; }
   .asset-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
+  .technical-state-heading { display: grid; }
+  .technical-facts { grid-template-columns: 1fr; }
+  .storage-observations li { display: grid; }
+  .storage-observations span { text-align: left; }
 }
 
 @media (prefers-reduced-motion: reduce) {
