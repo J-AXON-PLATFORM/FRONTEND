@@ -47,6 +47,10 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
 
   await page.reload();
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();
+  const technicalEventsConnected = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/assets/${assetId}/technical-state/events`)
+      && response.status() === 200
+  ));
   await page.getByLabel("UUID del activo").fill(assetId);
   await page.getByRole("button", { name: "Consultar" }).click();
   const persistedCard = page.getByRole("article", { name: "Consulta por ID" });
@@ -133,6 +137,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   expect(JSON.parse(verifiedOutput).status).toBe("verified");
   await expect(page.getByRole("button", { name: "Activar Agent" })).not.toBeVisible();
   await expect(page.getByText("Aún no hay información técnica observada para este activo.")).toBeVisible();
+  await technicalEventsConnected;
 
   const snapshotOutput = execFileSync("uv", [
     "run",
@@ -158,12 +163,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     const response = await fetch(`${api}/api/v1/assets/${id}/technical-state`, { credentials: "include" });
     return { status: response.status, body: await response.json() };
   }, { api: backendUrl!, id });
-  await expect.poll(async () => (await technicalState(assetId)).body.latestObservation?.snapshotId, {
-    timeout: 30_000,
-  }).toBe(sentSnapshot.snapshotId);
-  await page.getByRole("button", { name: "Actualizar información técnica" }).click();
   const observedCard = page.getByRole("article", { name: "Última observación técnica" });
-  await expect(observedCard).toContainText(sentSnapshot.snapshotId);
+  await expect(observedCard).toContainText(sentSnapshot.snapshotId, { timeout: 30_000 });
   await expect(observedCard).toContainText("LINUX");
   await expect(page.getByRole("heading", { name: "Información oficial del activo" }).last()).toBeVisible();
 
