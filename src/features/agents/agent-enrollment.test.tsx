@@ -21,6 +21,9 @@ const pendingAgent = {
   agentId,
   assetId,
   status: "PENDING",
+  operationalStatus: "UNKNOWN",
+  lastSeenAt: null,
+  lastSnapshotAt: null,
   publicKeyRegistered: false,
   publicKeyFingerprint: null,
   createdAt: "2026-10-11T20:00:00Z",
@@ -34,6 +37,12 @@ const registeredAgent = {
   updatedAt: "2026-10-11T20:05:00Z",
 };
 const activeAgent = { ...registeredAgent, status: "ACTIVE", version: 1 };
+const onlineAgent = {
+  ...activeAgent,
+  operationalStatus: "ONLINE",
+  lastSeenAt: "2026-10-18T12:00:00Z",
+  lastSnapshotAt: "2026-10-18T11:59:57Z",
+};
 const connection = {
   host: "sftp.example.internal",
   port: 2022,
@@ -47,15 +56,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderEnrollment() {
+function renderEnrollment(currentSession = session) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   render(
     <QueryClientProvider client={client}>
-      <AgentEnrollment assetId={assetId} session={session} />
+      <AgentEnrollment assetId={assetId} session={currentSession} />
     </QueryClientProvider>,
   );
+  return client;
 }
 
 describe("AgentEnrollment", () => {
@@ -71,6 +81,7 @@ describe("AgentEnrollment", () => {
     expect(await screen.findByText(new RegExp(`jaxon-agent initialize --agent-id ${agentId}`))).toBeDefined();
     const initialCard = await screen.findByRole("article", { name: "Estado del Agent" });
     expect(within(initialCard).getByText("PENDING")).toBeDefined();
+    expect(within(initialCard).getAllByText("Sin contacto").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Clave pública OpenSSH Ed25519"), {
       target: { value: `${publicKey} local-comment` },
@@ -159,6 +170,49 @@ describe("AgentEnrollment", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("No existe");
     expect(screen.queryByRole("article", { name: "Estado del Agent" })).toBeNull();
+  });
+
+  it("shows administrative and operational state with explicit UTC evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(onlineAgent)));
+    renderEnrollment();
+
+    fireEvent.change(screen.getByLabelText("UUID del Agent"), { target: { value: agentId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
+
+    const card = await screen.findByRole("article", { name: "Estado del Agent" });
+    expect(within(card).getByText("ACTIVE")).toBeDefined();
+    expect(within(card).getAllByText("En línea").length).toBeGreaterThan(0);
+    expect(within(card).getByText("2026-10-18 12:00:00Z UTC")).toBeDefined();
+    expect(within(card).getByText("2026-10-18 11:59:57Z UTC")).toBeDefined();
+  });
+
+  it("rejects incomplete Agent responses instead of presenting a false state", async () => {
+    const incomplete = Object.fromEntries(
+      Object.entries(onlineAgent).filter(([key]) => key !== "operationalStatus"),
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(incomplete)));
+    renderEnrollment();
+
+    fireEvent.change(screen.getByLabelText("UUID del Agent"), { target: { value: agentId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("no está disponible");
+    expect(screen.queryByRole("article", { name: "Estado del Agent" })).toBeNull();
+  });
+
+  it("segments Agent cache entries by authenticated user", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(onlineAgent));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = renderEnrollment();
+
+    fireEvent.change(screen.getByLabelText("UUID del Agent"), { target: { value: agentId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
+    await screen.findByRole("article", { name: "Estado del Agent" });
+
+    expect(client.getQueryData(["users", session.userId, "agents", "agent", agentId]))
+      .toEqual(onlineAgent);
+    expect(client.getQueryData(["users", "another-user", "agents", "agent", agentId]))
+      .toBeUndefined();
   });
 
   it.each([

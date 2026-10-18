@@ -95,6 +95,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.getByRole("button", { name: "Activar Agent" }).click();
   expect((await activationResponse).status()).toBe(200);
   await expect(agentCard).toContainText("ACTIVE");
+  await expect(agentCard).toContainText("Sin contacto");
+  await expect(agentCard).toContainText("Estado administrativoACTIVE");
   const connectionCard = page.getByRole("article", { name: "Conexión SFTP del Agent" });
   await expect(connectionCard).toBeVisible();
   const connectionText = await connectionCard.textContent();
@@ -163,12 +165,39 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     const response = await fetch(`${api}/api/v1/assets/${id}/technical-state`, { credentials: "include" });
     return { status: response.status, body: await response.json() };
   }, { api: backendUrl!, id });
+  const agentState = async (id: string) => page.evaluate(async ({ api, id }) => {
+    const response = await fetch(`${api}/api/v1/agents/${id}`, { credentials: "include" });
+    return { status: response.status, body: await response.json() };
+  }, { api: backendUrl!, id });
   const observedCard = page.getByRole("article", { name: "Última observación técnica" });
   await expect(observedCard).toContainText(sentSnapshot.snapshotId, { timeout: 30_000 });
   await expect(observedCard).toContainText("LINUX");
   await expect(page.getByRole("heading", { name: "Información oficial del activo" }).last()).toBeVisible();
+  await page.getByRole("button", { name: "Consultar Agent" }).click();
+  await expect(agentCard).toContainText("En línea");
+  await expect(agentCard).toContainText("ACTIVE");
+  const onlineAgent = await agentState(agentId);
+  expect(onlineAgent.status).toBe(200);
+  expect(onlineAgent.body.operationalStatus).toBe("ONLINE");
+  expect(onlineAgent.body.lastSeenAt).toBeTruthy();
+  expect(onlineAgent.body.lastSnapshotAt).toBe(sentSnapshot.capturedAt);
+
+  execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `UPDATE collector.accepted_snapshots
+      SET received_at = CURRENT_TIMESTAMP - INTERVAL '6 minutes'
+      WHERE agent_id = '${agentId}'`,
+  ]);
+  await page.getByRole("button", { name: "Consultar Agent" }).click();
+  await expect(agentCard).toContainText("Fuera de línea");
+  await expect(agentCard).toContainText("ACTIVE");
+  const offlineAgent = await agentState(agentId);
+  expect(offlineAgent.body.operationalStatus).toBe("OFFLINE");
+  const offlineLastSeenAt = offlineAgent.body.lastSeenAt as string;
 
   const partialMessageId = "9d0d4d9b-4f40-4e15-88ae-451824e5ca92";
+  const rejectedMessageId = "f2774922-02bb-42f8-a793-3e924bd753f8";
   const knownHosts = `${agentStateDir}/known_hosts_e2e`;
   const partialPayload = `${agentStateDir}/partial-e2e.json`;
   const acceptedPayload = `${agentStateDir}/accepted-e2e.json`;
@@ -189,7 +218,10 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", `UserKnownHostsFile=${knownHosts}`,
     `${connectionResponse.username}@127.0.0.1`,
-  ], { encoding: "utf8", input: `put ${partialPayload} /snapshots/${partialMessageId}.json.part\n` });
+  ], {
+    encoding: "utf8",
+    input: `put ${partialPayload} /snapshots/${partialMessageId}.json.part\nput ${partialPayload} /snapshots/${rejectedMessageId}.json\n`,
+  });
   expect(partialUpload.status).toBe(0);
   await page.waitForTimeout(2_500);
   expect(execFileSync("docker", [
@@ -202,6 +234,15 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
     "--command", `SELECT count(*) FROM collector.accepted_snapshots WHERE message_id = '${sentSnapshot.messageId}'`,
   ], { encoding: "utf8" }).trim()).toBe("1");
+  await expect.poll(() => execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--tuples-only", "--no-align",
+    "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT status FROM collector.snapshot_ingestions WHERE source_path LIKE '%/${rejectedMessageId}.json' ORDER BY received_at DESC LIMIT 1`,
+  ], { encoding: "utf8" }).trim(), { timeout: 30_000 }).toBe("REJECTED");
+  const afterRejection = await agentState(agentId);
+  expect(afterRejection.body.status).toBe("ACTIVE");
+  expect(afterRejection.body.operationalStatus).toBe("OFFLINE");
+  expect(afterRejection.body.lastSeenAt).toBe(offlineLastSeenAt);
   expect(execFileSync("docker", [
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--tuples-only", "--no-align",
     "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",

@@ -196,7 +196,8 @@ h1 {
 .agent-card { border: 1px solid var(--line); padding: 1.2rem; background: #f7f4ea; }
 .agent-card h3 { margin: 0; font-family: ui-monospace, monospace; font-size: 1rem; overflow-wrap: anywhere; }
 .agent-status { border: 1px solid #6c5d29; padding: 0.4rem 0.55rem; color: #6c5d29; font-family: ui-monospace, monospace; font-size: 0.7rem; font-weight: 800; }
-.agent-status-active { border-color: #28613d; color: #28613d; }
+.agent-status-online { border-color: #28613d; color: #28613d; }
+.agent-status-offline { border-color: #8a3029; color: #8a3029; }
 .connection-card dl { display: grid; gap: 0.65rem; margin: 0; }
 .connection-card dl div { display: grid; grid-template-columns: 5rem 1fr; gap: 0.75rem; }
 .connection-card dt { color: var(--muted); font-weight: 700; }
