@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   activateAgent,
+  AgentContractError,
   getAgent,
   preRegisterAgent,
   registerAgentPublicKey,
@@ -25,6 +26,7 @@ export function AgentEnrollment({
   const [agentId, setAgentId] = useState("");
   const [publicKey, setPublicKey] = useState("");
   const [keyValidation, setKeyValidation] = useState(false);
+  const agentQueryKey = (id: string) => ["users", session.userId, "agents", "agent", id] as const;
 
   const preRegistration = useMutation({
     mutationFn: () => preRegisterAgent(assetId, session.csrfToken),
@@ -35,15 +37,17 @@ export function AgentEnrollment({
     },
   });
   const lookup = useQuery({
-    queryKey: ["agents", "agent", agentId],
+    queryKey: agentQueryKey(agentId),
     queryFn: () => getAgent(agentId),
     enabled: UUID_V4.test(agentId),
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 1,
+    retry: (count, error) => !(error instanceof AgentContractError)
+      && !(error instanceof ApiError && error.status < 500)
+      && count < 1,
   });
   const keyRegistration = useMutation({
     mutationFn: () => registerAgentPublicKey(agentId, publicKey.trim(), session.csrfToken),
     onSuccess: (agent) => {
-      queryClient.setQueryData(["agents", "agent", agent.agentId], agent);
+      queryClient.setQueryData(agentQueryKey(agent.agentId), agent);
       setPublicKey("");
       setKeyValidation(false);
     },
@@ -55,7 +59,7 @@ export function AgentEnrollment({
       return { agent, connection };
     },
     onSuccess: ({ agent }) => {
-      queryClient.setQueryData(["agents", "agent", agent.agentId], agent);
+      queryClient.setQueryData(agentQueryKey(agent.agentId), agent);
     },
   });
   const authenticationError = [
@@ -79,7 +83,7 @@ export function AgentEnrollment({
     activation.reset();
     setAgentId(candidate);
     if (UUID_V4.test(candidate)) {
-      void queryClient.invalidateQueries({ queryKey: ["agents", "agent", candidate] });
+      void queryClient.invalidateQueries({ queryKey: agentQueryKey(candidate), exact: true });
     }
   }
 
@@ -215,16 +219,33 @@ function AgentCard({ agent }: Readonly<{ agent: Agent }>) {
     <article className="agent-card" aria-label="Estado del Agent">
       <div className="asset-card-title">
         <h3>{agent.agentId}</h3>
-        <span className={`agent-status agent-status-${agent.status.toLowerCase()}`}>{agent.status}</span>
+        <span className={`agent-status agent-status-${agent.operationalStatus.toLowerCase()}`}>
+          {operationalLabel(agent.operationalStatus)}
+        </span>
       </div>
       <dl>
         <div><dt>Activo</dt><dd>{agent.assetId}</dd></div>
+        <div><dt>Estado administrativo</dt><dd>{agent.status}</dd></div>
+        <div><dt>Estado operativo</dt><dd>{operationalLabel(agent.operationalStatus)}</dd></div>
+        <div><dt>Último contacto</dt><dd>{formatUtc(agent.lastSeenAt, "Sin contacto")}</dd></div>
+        <div><dt>Último snapshot</dt><dd>{formatUtc(agent.lastSnapshotAt, "Sin snapshot aceptado")}</dd></div>
         <div><dt>Clave pública</dt><dd>{agent.publicKeyRegistered ? "Registrada" : "Pendiente"}</dd></div>
         <div><dt>Huella</dt><dd>{agent.publicKeyFingerprint ?? "Aún no registrada"}</dd></div>
         <div><dt>Versión</dt><dd>{agent.version}</dd></div>
       </dl>
     </article>
   );
+}
+
+function operationalLabel(status: Agent["operationalStatus"]) {
+  if (status === "ONLINE") return "En línea";
+  if (status === "OFFLINE") return "Fuera de línea";
+  return "Sin contacto";
+}
+
+function formatUtc(value: string | null, empty: string) {
+  if (value === null) return empty;
+  return `${new Date(value).toISOString().replace("T", " ").replace(".000Z", "Z")} UTC`;
 }
 
 function agentError(error: Error | null, action: string, activating = false) {
