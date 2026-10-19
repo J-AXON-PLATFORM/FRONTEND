@@ -7,10 +7,14 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   activateAgent,
   AgentContractError,
+  AgentTaskContractError,
+  createCollectSnapshotTask,
   getAgent,
+  getAgentTask,
   preRegisterAgent,
   registerAgentPublicKey,
   type Agent,
+  type AgentTask,
 } from "./api";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,12 +30,18 @@ export function AgentEnrollment({
   const [agentId, setAgentId] = useState("");
   const [publicKey, setPublicKey] = useState("");
   const [keyValidation, setKeyValidation] = useState(false);
+  const [taskId, setTaskId] = useState("");
   const agentQueryKey = (id: string) => ["users", session.userId, "agents", "agent", id] as const;
+  const taskQueryKey = (id: string, idTask: string) => [
+    "users", session.userId, "agents", "agent", id, "tasks", idTask,
+  ] as const;
 
   const preRegistration = useMutation({
     mutationFn: () => preRegisterAgent(assetId, session.csrfToken),
     onSuccess: (agent) => {
       activation.reset();
+      taskCreation.reset();
+      setTaskId("");
       setAgentIdValue(agent.agentId);
       setAgentId(agent.agentId);
     },
@@ -62,11 +72,29 @@ export function AgentEnrollment({
       queryClient.setQueryData(agentQueryKey(agent.agentId), agent);
     },
   });
+  const taskCreation = useMutation({
+    mutationFn: () => createCollectSnapshotTask(agentId, session.csrfToken),
+    onSuccess: (task) => {
+      setTaskId(task.taskId);
+      queryClient.setQueryData(taskQueryKey(task.agentId, task.taskId), task);
+    },
+  });
+  const taskLookup = useQuery({
+    queryKey: taskQueryKey(agentId, taskId),
+    queryFn: () => getAgentTask(agentId, taskId),
+    enabled: UUID_V4.test(agentId) && UUID_V4.test(taskId),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: (count, error) => !(error instanceof AgentTaskContractError)
+      && !(error instanceof ApiError && error.status < 500)
+      && count < 1,
+  });
   const authenticationError = [
     preRegistration.error,
     lookup.error,
     keyRegistration.error,
     activation.error,
+    taskCreation.error,
+    taskLookup.error,
   ]
     .find((error) => error instanceof ApiError && error.status === 401);
 
@@ -81,6 +109,8 @@ export function AgentEnrollment({
     event.preventDefault();
     const candidate = agentIdValue.trim();
     activation.reset();
+    taskCreation.reset();
+    setTaskId("");
     setAgentId(candidate);
     if (UUID_V4.test(candidate)) {
       void queryClient.invalidateQueries({ queryKey: agentQueryKey(candidate), exact: true });
@@ -209,9 +239,64 @@ export function AgentEnrollment({
             </dl>
           </article>
         )}
+        {current?.status === "ACTIVE" && (
+          <div className="agent-step task-step">
+            <div className="form-heading"><span>07</span><h3>Recolectar snapshot</h3></div>
+            <p>Crea una única tarea remota con vencimiento de 15 minutos.</p>
+            <button
+              type="button"
+              disabled={taskCreation.isPending || taskIsActive(taskLookup.data)}
+              onClick={() => {
+                taskCreation.reset();
+                taskCreation.mutate();
+              }}
+            >
+              {taskCreation.isPending ? "Creando tarea..." : "Solicitar snapshot"}
+            </button>
+            {taskCreation.isError && (
+              <p className="form-error" role="alert">{taskError(taskCreation.error, "crear")}</p>
+            )}
+            {taskId && (
+              <button
+                type="button"
+                disabled={taskLookup.isFetching}
+                onClick={() => void taskLookup.refetch()}
+              >
+                {taskLookup.isFetching ? "Consultando tarea..." : "Actualizar tarea"}
+              </button>
+            )}
+            {taskLookup.isError && (
+              <p className="form-error" role="alert">{taskError(taskLookup.error, "consultar")}</p>
+            )}
+            {taskLookup.data && <TaskCard task={taskLookup.data} />}
+          </div>
+        )}
       </div>
     </section>
   );
+}
+
+function TaskCard({ task }: Readonly<{ task: AgentTask }>) {
+  return (
+    <article className="agent-card task-card" aria-label="Estado de la tarea Agent">
+      <div className="asset-card-title">
+        <h3>{task.taskId}</h3>
+        <span className="agent-status">{task.status}</span>
+      </div>
+      <dl>
+        <div><dt>Tipo</dt><dd>{task.taskType}</dd></div>
+        <div><dt>Creada</dt><dd>{formatUtc(task.createdAt, "-")}</dd></div>
+        <div><dt>Vence</dt><dd>{formatUtc(task.expiresAt, "-")}</dd></div>
+        <div><dt>Despachada</dt><dd>{formatUtc(task.dispatchedAt, "Pendiente")}</dd></div>
+        <div><dt>Completada</dt><dd>{formatUtc(task.completedAt, "Pendiente")}</dd></div>
+        {task.error && <div><dt>Error</dt><dd>{task.error.message} ({task.error.code})</dd></div>}
+      </dl>
+    </article>
+  );
+}
+
+function taskIsActive(task: AgentTask | undefined) {
+  return task?.status === "PENDING" || task?.status === "DISPATCHED" || task?.status === "RUNNING";
 }
 
 function AgentCard({ agent }: Readonly<{ agent: Agent }>) {
@@ -261,4 +346,15 @@ function agentError(error: Error | null, action: string, activating = false) {
     ? "Los requisitos de activación no son válidos."
     : "Revisa el UUID y la clave pública Ed25519.";
   return `No fue posible ${action} el Agent. El servicio no está disponible.`;
+}
+
+function taskError(error: Error | null, action: string) {
+  if (!(error instanceof ApiError)) {
+    return `No fue posible ${action} la tarea. El servicio no está disponible.`;
+  }
+  if (error.status === 403) return "La sesión no autoriza esta operación.";
+  if (error.status === 404) return "No existe el Agent o la tarea indicada.";
+  if (error.status === 409) return "El Agent ya tiene una tarea activa. Actualiza su estado antes de reintentar.";
+  if (error.status === 400 || error.status === 422) return "La solicitud de tarea no es válida.";
+  return `No fue posible ${action} la tarea. El servicio no está disponible.`;
 }
