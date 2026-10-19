@@ -2,6 +2,7 @@
 
 import { ApiError, getCurrentSession } from "@/features/auth/api";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
+import { TicketWorkspace } from "@/features/support/ticket-workspace";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -44,6 +45,7 @@ export default function HomePage() {
         </ul>
       </section>
       <AssetWorkspace session={session.data} />
+      <TicketWorkspace session={session.data} />
     </main>
   );
 }
