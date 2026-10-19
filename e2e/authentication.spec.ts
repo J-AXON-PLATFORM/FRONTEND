@@ -182,6 +182,46 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   expect(onlineAgent.body.lastSeenAt).toBeTruthy();
   expect(onlineAgent.body.lastSnapshotAt).toBe(sentSnapshot.capturedAt);
 
+  const createTaskResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/agents/${agentId}/tasks`)
+      && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Solicitar snapshot" }).click();
+  const createdTaskResponse = await createTaskResponse;
+  expect(createdTaskResponse.status()).toBe(201);
+  const createdTask = await createdTaskResponse.json() as { taskId: string; status: string };
+  expect(createdTask.taskId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  expect(createdTask.status).toBe("DISPATCHED");
+  const taskCard = page.getByRole("article", { name: "Estado de la tarea Agent" });
+  await expect(taskCard).toContainText("DISPATCHED");
+
+  const runnerOutput = execFileSync("uv", [
+    "run",
+    "--project",
+    automationDir!,
+    "--locked",
+    "jaxon-agent",
+    "run",
+    "--state-dir",
+    agentStateDir!,
+    "--once",
+  ], { encoding: "utf8", timeout: 330_000 });
+  expect(JSON.parse(runnerOutput)).toMatchObject({ cycles: 1, status: "STOPPED" });
+  await expect.poll(async () => page.evaluate(async ({ api, agent, task }) => {
+    const response = await fetch(`${api}/api/v1/agents/${agent}/tasks/${task}`, {
+      credentials: "include",
+    });
+    return (await response.json() as { status?: string }).status;
+  }, { api: backendUrl!, agent: agentId, task: createdTask.taskId }), { timeout: 30_000 })
+    .toBe("SUCCEEDED");
+  await page.getByRole("button", { name: "Actualizar tarea" }).click();
+  await expect(taskCard).toContainText("SUCCEEDED");
+  await expect(taskCard).toContainText("COLLECT_SNAPSHOT");
+  await expect.poll(async () => (
+    await technicalState(assetId)
+  ).body.latestObservation?.snapshotId, { timeout: 30_000 }).not.toBe(sentSnapshot.snapshotId);
+  const taskSnapshotId = (await technicalState(assetId)).body.latestObservation.snapshotId as string;
+
   execFileSync("docker", [
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
     "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
@@ -325,7 +365,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     await technicalState(secondAsset.body.assetId as string)
   ).body.latestObservation?.snapshotId, { timeout: 30_000 }).toBe(secondSnapshot.snapshotId);
   expect(secondSnapshot.snapshotId).not.toBe(sentSnapshot.snapshotId);
-  expect((await technicalState(assetId)).body.latestObservation.snapshotId).toBe(sentSnapshot.snapshotId);
+  expect((await technicalState(assetId)).body.latestObservation.snapshotId).toBe(taskSnapshotId);
 
   const secondKnownHosts = `${secondStateDir}/known_hosts_e2e`;
   writeFileSync(secondKnownHosts, `[127.0.0.1]:${secondActivation.body.port} ${secondActivation.body.publicHostKey}\n`, { mode: 0o600 });

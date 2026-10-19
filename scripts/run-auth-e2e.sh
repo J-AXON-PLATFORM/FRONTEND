@@ -9,6 +9,7 @@ database_container="${owner}-postgres"
 sftpgo_container="${owner}-sftpgo"
 backend_container="${owner}-backend"
 mailbox_volume="${owner}-mailboxes"
+tasks_volume="${owner}-tasks"
 database_image="jaxon-postgres-pgvector-test:${owner}"
 backend_image="jaxon-backend:${owner}"
 backend_port="${JAXON_E2E_BACKEND_PORT:-$((18000 + RANDOM % 1000))}"
@@ -26,6 +27,7 @@ cleanup() {
   docker rm --force "${sftpgo_container}" >/dev/null 2>&1 || true
   docker rm --force "${backend_container}" >/dev/null 2>&1 || true
   docker volume rm "${mailbox_volume}" >/dev/null 2>&1 || true
+  docker volume rm "${tasks_volume}" >/dev/null 2>&1 || true
   docker image rm "${database_image}" >/dev/null 2>&1 || true
   docker image rm "${backend_image}" >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
@@ -55,12 +57,14 @@ docker run --detach --rm --name "${database_container}" \
   "${database_image}" >/dev/null
 "${backend_dir}/docker/sftpgo/build-local.sh"
 docker volume create --label "com.jaxon.resource-owner=${owner}" "${mailbox_volume}" >/dev/null
+docker volume create --label "com.jaxon.resource-owner=${owner}" "${tasks_volume}" >/dev/null
 docker run --detach --rm --name "${sftpgo_container}" \
   --label "com.jaxon.resource-owner=${owner}" \
   --publish 127.0.0.1::2022 \
   --publish 127.0.0.1::8080 \
   --mount "source=${mailbox_volume},target=/srv/sftpgo/data" \
-  --env SFTPGO_COMMON__UMASK=0027 \
+  --mount "source=${tasks_volume},target=/srv/sftpgo/tasks" \
+  --env SFTPGO_COMMON__UMASK=0007 \
   --env SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=true \
   --env SFTPGO_DEFAULT_ADMIN_USERNAME=jaxon-e2e-provisioner \
   --env SFTPGO_DEFAULT_ADMIN_PASSWORD="sftp-${owner}" \
@@ -97,15 +101,19 @@ export JAXON_SFTP_PUBLIC_HOST=127.0.0.1
 export JAXON_SFTP_PUBLIC_PORT="${sftpgo_port}"
 export JAXON_SFTP_PUBLIC_HOST_KEY="${sftpgo_host_key}"
 export JAXON_COLLECTOR_MAILBOX_ROOT=/srv/sftpgo/data
+export JAXON_COLLECTOR_TASK_PUBLICATION_ROOT=/srv/sftpgo/tasks
+export JAXON_COLLECTOR_TASK_RECONCILIATION_INTERVAL=1s
+export JAXON_COLLECTOR_RESULT_STABILITY_AGE=0s
 export JAXON_COLLECTOR_RECONCILIATION_INTERVAL=1s
 export JAXON_COLLECTOR_SNAPSHOT_STABILITY_AGE=0s
 export SERVER_PORT="${backend_port}"
 docker build --tag "${backend_image}" "${backend_dir}"
-docker run --detach --rm --name "${backend_container}" \
+docker run --detach --name "${backend_container}" \
   --label "com.jaxon.resource-owner=${owner}" \
   --network host \
   --group-add 65532 \
   --mount "source=${mailbox_volume},target=/srv/sftpgo/data,readonly" \
+  --mount "source=${tasks_volume},target=/srv/sftpgo/tasks" \
   --env JAXON_DB_URL \
   --env JAXON_DB_USERNAME \
   --env JAXON_DB_PASSWORD \
@@ -121,6 +129,9 @@ docker run --detach --rm --name "${backend_container}" \
   --env JAXON_SFTP_PUBLIC_PORT \
   --env JAXON_SFTP_PUBLIC_HOST_KEY \
   --env JAXON_COLLECTOR_MAILBOX_ROOT \
+  --env JAXON_COLLECTOR_TASK_PUBLICATION_ROOT \
+  --env JAXON_COLLECTOR_TASK_RECONCILIATION_INTERVAL \
+  --env JAXON_COLLECTOR_RESULT_STABILITY_AGE \
   --env JAXON_COLLECTOR_RECONCILIATION_INTERVAL \
   --env JAXON_COLLECTOR_SNAPSHOT_STABILITY_AGE \
   --env SERVER_PORT \
@@ -131,7 +142,10 @@ for _ in $(seq 1 90); do
   if curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness" >/dev/null; then break; fi
   sleep 1
 done
-curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness" >/dev/null
+curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness" >/dev/null || {
+  docker logs "${backend_container}" >&2
+  exit 1
+}
 
 export NEXT_PUBLIC_JAXON_API_URL="http://localhost:${backend_port}/api/v1"
 export JAXON_E2E_BACKEND_URL="http://localhost:${backend_port}"

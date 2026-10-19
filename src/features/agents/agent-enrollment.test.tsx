@@ -43,6 +43,23 @@ const onlineAgent = {
   lastSeenAt: "2026-10-18T12:00:00Z",
   lastSnapshotAt: "2026-10-18T11:59:57Z",
 };
+const taskId = "d9bdb20c-9b56-4b91-8c4a-a83f64d5802a";
+const dispatchedTask = {
+  taskId,
+  agentId,
+  taskType: "COLLECT_SNAPSHOT",
+  status: "DISPATCHED",
+  createdAt: "2026-10-18T12:00:00Z",
+  expiresAt: "2026-10-18T12:15:00Z",
+  dispatchedAt: "2026-10-18T12:00:00Z",
+  completedAt: null,
+  error: null,
+};
+const succeededTask = {
+  ...dispatchedTask,
+  status: "SUCCEEDED",
+  completedAt: "2026-10-18T12:00:07Z",
+};
 const connection = {
   host: "sftp.example.internal",
   port: 2022,
@@ -213,6 +230,78 @@ describe("AgentEnrollment", () => {
       .toEqual(onlineAgent);
     expect(client.getQueryData(["users", "another-user", "agents", "agent", agentId]))
       .toBeUndefined();
+  });
+
+  it("creates and explicitly refreshes one COLLECT_SNAPSHOT task with user-scoped cache", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(activeAgent))
+      .mockResolvedValueOnce(jsonResponse(dispatchedTask, 201))
+      .mockResolvedValueOnce(jsonResponse(succeededTask));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = renderEnrollment();
+
+    fireEvent.change(screen.getByLabelText("UUID del Agent"), { target: { value: agentId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
+    await screen.findByRole("article", { name: "Estado del Agent" });
+    fireEvent.click(screen.getByRole("button", { name: "Solicitar snapshot" }));
+
+    const taskCard = await screen.findByRole("article", { name: "Estado de la tarea Agent" });
+    expect(within(taskCard).getByText("DISPATCHED")).toBeDefined();
+    expect(within(taskCard).getByText(taskId)).toBeDefined();
+    expect((screen.getByRole("button", { name: "Solicitar snapshot" }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": session.csrfToken },
+      body: JSON.stringify({ taskType: "COLLECT_SNAPSHOT" }),
+    });
+    expect(client.getQueryData([
+      "users", session.userId, "agents", "agent", agentId, "tasks", taskId,
+    ])).toEqual(dispatchedTask);
+
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar tarea" }));
+    expect(await within(taskCard).findByText("SUCCEEDED")).toBeDefined();
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ credentials: "include" });
+    expect(fetchMock.mock.calls[2]?.[0]).toContain(`/agents/${agentId}/tasks/${taskId}`);
+    expect((screen.getByRole("button", { name: "Solicitar snapshot" }) as HTMLButtonElement).disabled)
+      .toBe(false);
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("rejects an invalid task response instead of presenting a false terminal state", async () => {
+    const invalid = { ...dispatchedTask, status: "SUCCEEDED", completedAt: null };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse(activeAgent))
+      .mockResolvedValueOnce(jsonResponse(invalid, 201)));
+    renderEnrollment();
+
+    fireEvent.change(screen.getByLabelText("UUID del Agent"), { target: { value: agentId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
+    await screen.findByRole("article", { name: "Estado del Agent" });
+    fireEvent.click(screen.getByRole("button", { name: "Solicitar snapshot" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("no está disponible");
+    expect(screen.queryByRole("article", { name: "Estado de la tarea Agent" })).toBeNull();
+  });
+
+  it("presents an active-task conflict without losing the Agent state", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse(activeAgent))
+      .mockResolvedValueOnce(jsonResponse({
+        code: "AGENT_TASK_CONFLICT",
+        correlationId: session.userId,
+      }, 409, "application/problem+json")));
+    renderEnrollment();
+
+    fireEvent.change(screen.getByLabelText("UUID del Agent"), { target: { value: agentId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar Agent" }));
+    const agentCard = await screen.findByRole("article", { name: "Estado del Agent" });
+    fireEvent.click(screen.getByRole("button", { name: "Solicitar snapshot" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("tarea activa");
+    expect(within(agentCard).getByText("ACTIVE")).toBeDefined();
   });
 
   it.each([
