@@ -56,6 +56,44 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const persistedCard = page.getByRole("article", { name: "Consulta por ID" });
   await expect(persistedCard.getByRole("heading", { name: assetName })).toBeVisible();
 
+  const ticketSummary = `E2E printer incident ${Date.now()}`;
+  const ticketDescription = "The E2E reception printer is unavailable.";
+  const createTicketResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/tickets") && response.request().method() === "POST"
+  ));
+  await page.getByLabel("Resumen").fill(ticketSummary);
+  await page.getByLabel("Descripción").fill(ticketDescription);
+  await page.getByLabel("Activo asociado por UUID (opcional)").fill(assetId);
+  await page.getByRole("button", { name: "Crear ticket" }).click();
+  expect((await createTicketResponse).status()).toBe(201);
+  const ticketId = await page.getByLabel("UUID del ticket").inputValue();
+  expect(ticketId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  const createdTicketCard = page.getByRole("article", { name: "Resultado de creación del ticket" });
+  await expect(createdTicketCard.getByRole("heading", { name: ticketSummary })).toBeVisible();
+  await expect(createdTicketCard).toContainText("OPEN");
+  await expect(createdTicketCard).toContainText("NORMAL");
+  await expect(createdTicketCard).toContainText(assetId);
+
+  const persistedTicket = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT t.status || ':' || t.priority || ':' || t.source || ':' || t.asset_id || ':' ||
+      (SELECT count(*) FROM support.outbox_events e
+       WHERE e.event_type = 'TICKET_CREATED' AND e.resource_id = t.id
+         AND NOT e.payload ? 'description' AND NOT e.payload ? 'summary')
+      FROM support.tickets t WHERE t.id = '${ticketId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedTicket).toBe(`OPEN:NORMAL:WEB:${assetId}:1`);
+
+  const ticketLookupResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}`) && response.request().method() === "GET"
+  ));
+  await page.getByRole("button", { name: "Buscar ticket" }).click();
+  expect((await ticketLookupResponse).status()).toBe(200);
+  const queriedTicketCard = page.getByRole("article", { name: "Consulta del ticket por ID" });
+  await expect(queriedTicketCard.getByRole("heading", { name: ticketSummary })).toBeVisible();
+  await expect(queriedTicketCard).toContainText(ticketDescription);
+
   const preRegisterResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/agents") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Pre-registrar Agent" }).click();
   expect((await preRegisterResponse).status()).toBe(201);
