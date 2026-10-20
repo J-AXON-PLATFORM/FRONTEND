@@ -4,9 +4,21 @@ import { ApiError, type Session } from "@/features/auth/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
-import { createTicket, getTicket, TicketContractError, type Ticket, type TicketType } from "./api";
+import {
+  addTicketComment,
+  createTicket,
+  getTicket,
+  listTicketComments,
+  listTickets,
+  TicketContractError,
+  type Ticket,
+  type TicketComment,
+  type TicketType,
+} from "./api";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TICKET_PAGE_SIZE = 20;
+const COMMENT_PAGE_SIZE = 50;
 const TICKET_TYPES: { value: TicketType; label: string }[] = [
   { value: "INCIDENT", label: "Incidente" },
   { value: "SERVICE_REQUEST", label: "Solicitud de servicio" },
@@ -18,6 +30,23 @@ function ticketKey(userId: string, ticketId: string) {
   return ["users", userId, "support", "ticket", ticketId] as const;
 }
 
+function ticketListKey(userId: string, page: number) {
+  return ["users", userId, "support", "tickets", { page, size: TICKET_PAGE_SIZE }] as const;
+}
+
+function commentKey(userId: string, ticketId: string, page: number) {
+  return [
+    "users", userId, "support", "ticket", ticketId, "comments",
+    { page, size: COMMENT_PAGE_SIZE },
+  ] as const;
+}
+
+function retryGet(count: number, error: Error) {
+  return !(error instanceof ApiError && error.status < 500)
+    && !(error instanceof TicketContractError)
+    && count < 1;
+}
+
 export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -27,9 +56,32 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
   const [assetId, setAssetId] = useState("");
   const [createdTicket, setCreatedTicket] = useState<Ticket>();
   const [lookupValue, setLookupValue] = useState("");
-  const [lookupId, setLookupId] = useState("");
+  const [selectedTicketId, setSelectedTicketId] = useState("");
+  const [ticketPage, setTicketPage] = useState(0);
+  const [commentPage, setCommentPage] = useState(0);
+  const [commentBody, setCommentBody] = useState("");
   const canOperate = session.roles.includes("IT_OPERATOR");
 
+  const tickets = useQuery({
+    queryKey: ticketListKey(session.userId, ticketPage),
+    queryFn: () => listTickets(ticketPage, TICKET_PAGE_SIZE, session.userId),
+    enabled: canOperate,
+    retry: retryGet,
+  });
+  const selectedTicket = useQuery({
+    queryKey: ticketKey(session.userId, selectedTicketId),
+    queryFn: () => getTicket(selectedTicketId, session.userId),
+    enabled: canOperate && UUID_V4.test(selectedTicketId),
+    retry: retryGet,
+  });
+  const comments = useQuery({
+    queryKey: commentKey(session.userId, selectedTicketId, commentPage),
+    queryFn: () => listTicketComments(
+      selectedTicketId, commentPage, COMMENT_PAGE_SIZE, session.userId,
+    ),
+    enabled: canOperate && UUID_V4.test(selectedTicketId),
+    retry: retryGet,
+  });
   const creation = useMutation({
     mutationFn: () => createTicket({
       type,
@@ -37,25 +89,45 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
       description: description.trim(),
       ...(assetId.trim() ? { assetId: assetId.trim() } : {}),
     }, session.csrfToken, session.userId),
+    retry: false,
     onSuccess: (ticket) => {
       setCreatedTicket(ticket);
       setLookupValue(ticket.ticketId);
-      setLookupId(ticket.ticketId);
+      selectTicket(ticket.ticketId);
       setSummary("");
       setDescription("");
       setAssetId("");
+      void queryClient.invalidateQueries({
+        queryKey: ["users", session.userId, "support", "tickets"],
+      });
     },
   });
-  const lookup = useQuery({
-    queryKey: ticketKey(session.userId, lookupId),
-    queryFn: () => getTicket(lookupId, session.userId),
-    enabled: UUID_V4.test(lookupId),
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500)
-      && !(error instanceof TicketContractError)
-      && count < 1,
+  const commentCreation = useMutation({
+    mutationFn: ({ ticketId, body }: { ticketId: string; body: string }) => addTicketComment(
+      ticketId, body, session.csrfToken, session.userId,
+    ),
+    retry: false,
+    onSuccess: async (_, variables) => {
+      setCommentBody("");
+      await queryClient.invalidateQueries({
+        queryKey: [
+          "users", session.userId, "support", "ticket", variables.ticketId, "comments",
+        ],
+      });
+      const firstPage = await queryClient.fetchQuery({
+        queryKey: commentKey(session.userId, variables.ticketId, 0),
+        queryFn: () => listTicketComments(
+          variables.ticketId, 0, COMMENT_PAGE_SIZE, session.userId,
+        ),
+      });
+      if (selectedTicketId === variables.ticketId) {
+        setCommentPage(Math.max(0, firstPage.totalPages - 1));
+      }
+    },
   });
-  const authenticationError = [creation.error, lookup.error]
-    .find((error) => error instanceof ApiError && error.status === 401);
+  const authenticationError = [
+    tickets.error, selectedTicket.error, comments.error, creation.error, commentCreation.error,
+  ].find((error) => error instanceof ApiError && error.status === 401);
 
   useEffect(() => {
     if (authenticationError) {
@@ -64,8 +136,13 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
     }
   }, [authenticationError, queryClient, router]);
 
-  if (!canOperate) {
-    return null;
+  if (!canOperate) return null;
+
+  function selectTicket(ticketId: string) {
+    commentCreation.reset();
+    setSelectedTicketId(ticketId);
+    setCommentPage(0);
+    setCommentBody("");
   }
 
   function submitCreation(event: FormEvent<HTMLFormElement>) {
@@ -78,13 +155,23 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
     event.preventDefault();
     const candidate = lookupValue.trim();
     setCreatedTicket(undefined);
-    setLookupId(candidate);
+    selectTicket(candidate);
     if (UUID_V4.test(candidate)) {
-      void queryClient.invalidateQueries({ queryKey: ticketKey(session.userId, candidate), exact: true });
+      void queryClient.invalidateQueries({
+        queryKey: ticketKey(session.userId, candidate), exact: true,
+      });
+    }
+  }
+
+  function submitComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (commentBody.trim()) {
+      commentCreation.mutate({ ticketId: selectedTicketId, body: commentBody.trim() });
     }
   }
 
   const invalidAssetId = Boolean(assetId.trim()) && !UUID_V4.test(assetId.trim());
+  const invalidLookup = Boolean(selectedTicketId) && !UUID_V4.test(selectedTicketId);
   return (
     <section className="ticket-workspace" aria-labelledby="ticket-title">
       <header className="workspace-heading">
@@ -92,7 +179,7 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
           <p className="sequence">Support / solicitud propia</p>
           <h2 id="ticket-title">Tickets</h2>
         </div>
-        <p>Alta mínima y consulta directa de tickets propios. Sin listado ni gestión del ciclo de vida.</p>
+        <p>Alta, consulta y conversación pública de tus tickets, sin autoridad sobre su ciclo de vida.</p>
       </header>
 
       <div className="ticket-grid">
@@ -126,24 +213,143 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
         </form>
 
         <div className="ticket-results">
+          <div className="ticket-list-panel">
+            <div className="form-heading"><span>02</span><h3>Mis tickets</h3></div>
+            {tickets.isPending && <p className="result-status" aria-live="polite">Cargando tickets...</p>}
+            {tickets.isError && <p className="form-error" role="alert">{errorMessage(tickets.error, "listar")}</p>}
+            {tickets.data?.items.length === 0 && <p className="ticket-empty">Todavía no tienes tickets.</p>}
+            {tickets.data && tickets.data.items.length > 0 && (
+              <ul className="ticket-list" aria-label="Tickets propios">
+                {tickets.data.items.map((ticket) => (
+                  <li key={ticket.ticketId}>
+                    <button
+                      type="button"
+                      aria-pressed={selectedTicketId === ticket.ticketId}
+                      onClick={() => {
+                        setLookupValue(ticket.ticketId);
+                        setCreatedTicket(undefined);
+                        selectTicket(ticket.ticketId);
+                      }}
+                    >
+                      <span>{ticket.type.replaceAll("_", " ")}</span>
+                      <strong>{ticket.summary}</strong>
+                      <time dateTime={ticket.createdAt}>{formatUtc(ticket.createdAt)}</time>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {tickets.data && (
+              <Pagination
+                label="Paginación de tickets"
+                page={ticketPage}
+                totalPages={tickets.data.totalPages}
+                pending={tickets.isFetching}
+                onPage={setTicketPage}
+              />
+            )}
+          </div>
+
           <form className="lookup-form" onSubmit={submitLookup}>
-            <div className="form-heading"><span>02</span><h3>Consultar por ID</h3></div>
+            <div className="form-heading"><span>03</span><h3>Consultar por ID</h3></div>
             <div className="field">
               <label htmlFor="ticket-id">UUID del ticket</label>
               <div className="lookup-control">
                 <input id="ticket-id" autoComplete="off" placeholder="00000000-0000-4000-8000-000000000000" required value={lookupValue} onChange={(event) => setLookupValue(event.target.value)} />
-                <button type="submit" disabled={lookup.isFetching}>Buscar ticket</button>
+                <button type="submit" disabled={selectedTicket.isFetching}>Buscar ticket</button>
               </div>
             </div>
           </form>
-          {lookupId && !UUID_V4.test(lookupId) && <p className="form-error" role="alert">Introduce un UUIDv4 válido.</p>}
-          {lookup.isError && <p className="form-error" role="alert">{errorMessage(lookup.error, "consultar")}</p>}
-          {lookup.isFetching && <p className="result-status" aria-live="polite">Consultando ticket...</p>}
+          {invalidLookup && <p className="form-error" role="alert">Introduce un UUIDv4 válido.</p>}
+          {selectedTicket.isError && <p className="form-error" role="alert">{errorMessage(selectedTicket.error, "consultar")}</p>}
+          {selectedTicket.isFetching && <p className="result-status" aria-live="polite">Consultando ticket...</p>}
           {createdTicket && <TicketCard ticket={createdTicket} label="Resultado de creación del ticket" />}
-          {lookup.data && <TicketCard ticket={lookup.data} label="Consulta del ticket por ID" />}
+          {selectedTicket.data && <TicketCard ticket={selectedTicket.data} label="Consulta del ticket por ID" />}
+          {selectedTicket.data && (
+            <Conversation
+              ticketId={selectedTicket.data.ticketId}
+              comments={comments.data?.items ?? []}
+              page={commentPage}
+              totalPages={comments.data?.totalPages ?? 0}
+              body={commentBody}
+              pending={commentCreation.isPending}
+              fetching={comments.isFetching}
+              commentsError={comments.error}
+              commentError={commentCreation.error}
+              onBody={setCommentBody}
+              onPage={setCommentPage}
+              onSubmit={submitComment}
+            />
+          )}
         </div>
       </div>
     </section>
+  );
+}
+
+function Conversation({
+  ticketId, comments, page, totalPages, body, pending, fetching, commentsError, commentError,
+  onBody, onPage, onSubmit,
+}: Readonly<{
+  ticketId: string;
+  comments: TicketComment[];
+  page: number;
+  totalPages: number;
+  body: string;
+  pending: boolean;
+  fetching: boolean;
+  commentsError: Error | null;
+  commentError: Error | null;
+  onBody: (body: string) => void;
+  onPage: (page: number) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}>) {
+  return (
+    <section className="ticket-conversation" aria-labelledby={`conversation-${ticketId}`}>
+      <div className="form-heading"><span>04</span><h3 id={`conversation-${ticketId}`}>Conversación pública</h3></div>
+      {fetching && <p className="result-status" aria-live="polite">Cargando conversación...</p>}
+      {commentsError && <p className="form-error" role="alert">{errorMessage(commentsError, "consultar")}</p>}
+      {commentError && <p className="form-error" role="alert">{errorMessage(commentError, "comentar")}</p>}
+      {!fetching && !commentsError && comments.length === 0 && <p className="ticket-empty">Aún no hay comentarios públicos.</p>}
+      {comments.length > 0 && (
+        <ol className="comment-list">
+          {comments.map((comment) => (
+            <li key={comment.commentId}>
+              <p>{comment.body}</p>
+              <time dateTime={comment.createdAt}>{formatUtc(comment.createdAt)}</time>
+            </li>
+          ))}
+        </ol>
+      )}
+      <Pagination
+        label="Paginación de comentarios"
+        page={page}
+        totalPages={totalPages}
+        pending={fetching}
+        onPage={onPage}
+      />
+      <form className="comment-form" onSubmit={onSubmit}>
+        <label htmlFor={`comment-${ticketId}`}>Añadir comentario público</label>
+        <textarea id={`comment-${ticketId}`} required maxLength={10000} rows={4} value={body} disabled={pending} onChange={(event) => onBody(event.target.value)} />
+        <button type="submit" disabled={pending || !body.trim()}>{pending ? "Publicando..." : "Publicar comentario"}</button>
+      </form>
+    </section>
+  );
+}
+
+function Pagination({ label, page, totalPages, pending, onPage }: Readonly<{
+  label: string;
+  page: number;
+  totalPages: number;
+  pending: boolean;
+  onPage: (page: number) => void;
+}>) {
+  return (
+    <nav className="ticket-pagination" aria-label={label}>
+      <button type="button" disabled={pending || page === 0} onClick={() => onPage(page - 1)}>Anterior</button>
+      <span>Página {totalPages === 0 ? 0 : page + 1} de {totalPages}</span>
+      <button type="button" disabled={pending || page + 1 >= totalPages} onClick={() => onPage(page + 1)}>Siguiente</button>
+    </nav>
   );
 }
 
@@ -162,18 +368,22 @@ function TicketCard({ ticket, label }: Readonly<{ ticket: Ticket; label: string 
         <div><dt>Prioridad</dt><dd>{ticket.priority}</dd></div>
         <div><dt>Origen</dt><dd>{ticket.source}</dd></div>
         <div><dt>Activo</dt><dd>{ticket.assetId ?? "Sin activo asociado"}</dd></div>
-        <div><dt>Creado</dt><dd>{new Date(ticket.createdAt).toLocaleString("es-ES", { timeZone: "UTC" })} UTC</dd></div>
+        <div><dt>Creado</dt><dd>{formatUtc(ticket.createdAt)}</dd></div>
       </dl>
     </article>
   );
 }
 
-function errorMessage(error: Error | null, action: "crear" | "consultar") {
+function formatUtc(value: string) {
+  return `${new Date(value).toLocaleString("es-ES", { timeZone: "UTC" })} UTC`;
+}
+
+function errorMessage(error: Error | null, action: "crear" | "consultar" | "listar" | "comentar") {
   if (error instanceof TicketContractError) {
-    return "El servicio devolvió un ticket con un formato no válido.";
+    return "El servicio devolvió datos de Support con un formato no válido.";
   }
   if (!(error instanceof ApiError)) {
-    return `No fue posible ${action} el ticket. El servicio no está disponible.`;
+    return `No fue posible ${action} tickets. El servicio no está disponible.`;
   }
   if (error.status === 403) return "La sesión no autoriza esta operación.";
   if (error.status === 404) {
@@ -181,6 +391,6 @@ function errorMessage(error: Error | null, action: "crear" | "consultar") {
       ? "No existe el activo asociado indicado."
       : "No existe un ticket propio con ese identificador.";
   }
-  if (error.status === 400 || error.status === 422) return "Revisa los datos del ticket e inténtalo de nuevo.";
-  return `No fue posible ${action} el ticket. El servicio no está disponible.`;
+  if (error.status === 400 || error.status === 422) return "Revisa los datos e inténtalo de nuevo.";
+  return `No fue posible ${action} tickets. El servicio no está disponible.`;
 }
