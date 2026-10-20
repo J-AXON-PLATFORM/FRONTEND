@@ -19,6 +19,22 @@ export type Ticket = {
   version: 0;
 };
 
+export type TicketListItem = {
+  ticketId: string;
+  type: TicketType;
+  summary: string;
+  status: "OPEN";
+  priority: "NORMAL";
+  source: "WEB";
+  requesterUserId: string;
+  createdByUserId: string;
+  assigneeUserId: null;
+  assetId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  version: 0;
+};
+
 export type TicketCreate = {
   type: TicketType;
   summary: string;
@@ -27,7 +43,7 @@ export type TicketCreate = {
 };
 
 export type TicketPage = {
-  items: Ticket[];
+  items: TicketListItem[];
   page: number;
   size: number;
   totalElements: number;
@@ -109,6 +125,34 @@ export function parseTicket(value: unknown, expectedRequesterUserId: string): Ti
     throw new TicketContractError();
   }
   return value as Ticket;
+}
+
+function parseTicketListItem(value: unknown, expectedRequesterUserId: string): TicketListItem {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "ticketId", "type", "summary", "status", "priority", "source", "requesterUserId",
+    "createdByUserId", "assigneeUserId", "assetId", "createdAt", "updatedAt", "version",
+  ]);
+  if (Object.keys(value).length !== expected.size
+      || Object.keys(value).some((key) => !expected.has(key))
+      || !isUuid(value.ticketId)
+      || !isTicketType(value.type)
+      || !isText(value.summary, 256)
+      || value.status !== "OPEN"
+      || value.priority !== "NORMAL"
+      || value.source !== "WEB"
+      || !isUuid(value.requesterUserId)
+      || value.requesterUserId !== expectedRequesterUserId
+      || value.createdByUserId !== value.requesterUserId
+      || value.assigneeUserId !== null
+      || (value.assetId !== null && !isUuid(value.assetId))
+      || !isUtc(value.createdAt)
+      || !isUtc(value.updatedAt)
+      || value.updatedAt !== value.createdAt
+      || value.version !== 0) {
+    throw new TicketContractError();
+  }
+  return value as TicketListItem;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -206,7 +250,7 @@ export function parseTicketPage(
       || !value.items.every((item) => isRecord(item))) {
     throw new TicketContractError();
   }
-  const items = value.items.map((item) => parseTicket(item, expectedRequesterUserId));
+  const items = value.items.map((item) => parseTicketListItem(item, expectedRequesterUserId));
   if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
     throw new TicketContractError();
   }

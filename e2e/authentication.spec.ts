@@ -61,6 +61,13 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const createTicketResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/tickets") && response.request().method() === "POST"
   ));
+  const ticketListResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith("/api/v1/tickets")
+      && response.request().method() === "GET"
+      && url.searchParams.get("page") === "0"
+      && url.searchParams.get("size") === "20";
+  });
   await page.getByLabel("Resumen").fill(ticketSummary);
   await page.getByLabel("Descripción").fill(ticketDescription);
   await page.getByLabel("Activo asociado por UUID (opcional)").fill(assetId);
@@ -73,6 +80,14 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(createdTicketCard).toContainText("OPEN");
   await expect(createdTicketCard).toContainText("NORMAL");
   await expect(createdTicketCard).toContainText(assetId);
+  const listedTickets = await (await ticketListResponse).json() as { items: Record<string, unknown>[] };
+  const listedTicket = listedTickets.items.find((item) => item.ticketId === ticketId);
+  expect(listedTicket).toBeDefined();
+  expect(listedTicket).not.toHaveProperty("description");
+  expect(Object.keys(listedTicket!).sort()).toEqual([
+    "assetId", "assigneeUserId", "createdAt", "createdByUserId", "priority",
+    "requesterUserId", "source", "status", "summary", "ticketId", "type", "updatedAt", "version",
+  ]);
 
   const persistedTicket = execFileSync("docker", [
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",

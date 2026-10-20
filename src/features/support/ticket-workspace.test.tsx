@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "@/features/auth/api";
+import type { TicketListItem } from "./api";
 import { TicketWorkspace } from "./ticket-workspace";
 
 const replace = vi.fn();
@@ -29,6 +30,21 @@ const ticket = {
   assetId,
   createdAt: "2026-10-19T18:00:00Z",
   updatedAt: "2026-10-19T18:00:00Z",
+  version: 0,
+};
+const ticketListItem: TicketListItem = {
+  ticketId: ticket.ticketId,
+  type: "INCIDENT",
+  summary: ticket.summary,
+  status: "OPEN",
+  priority: "NORMAL",
+  source: "WEB",
+  requesterUserId: ticket.requesterUserId,
+  createdByUserId: ticket.createdByUserId,
+  assigneeUserId: null,
+  assetId: ticket.assetId,
+  createdAt: ticket.createdAt,
+  updatedAt: ticket.updatedAt,
   version: 0,
 };
 const comment = {
@@ -83,7 +99,7 @@ function renderWorkspace(currentSession = session) {
 describe("TicketWorkspace", () => {
   it("moves through ticket pages without mixing user-scoped cache entries", async () => {
     const allTickets = Array.from({ length: 21 }, (_, index) => ({
-      ...ticket,
+      ...ticketListItem,
       ticketId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
       summary: `Ticket page item ${index + 1}`,
     }));
@@ -111,18 +127,22 @@ describe("TicketWorkspace", () => {
   });
 
   it("lists, selects, and presents an owned ticket with its public conversation", async () => {
-    const fetchMock = mockApi([ticket], [comment]);
+    const fetchMock = mockApi([ticketListItem], [comment]);
     vi.stubGlobal("fetch", fetchMock);
     const queryClient = renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    const listItem = await screen.findByRole("button", { name: /Printer unavailable/ });
+    expect(screen.queryByText(ticket.description)).toBeNull();
+    fireEvent.click(listItem);
 
     const selected = await screen.findByRole("article", { name: "Consulta del ticket por ID" });
     expect(within(selected).getByRole("heading", { name: ticket.summary })).toBeDefined();
+    expect(within(selected).getByText(ticket.description)).toBeDefined();
     expect(await screen.findByText(comment.body)).toBeDefined();
     expect(queryClient.getQueryData([
       "users", session.userId, "support", "tickets", { page: 0, size: 20 },
-    ])).toMatchObject({ items: [ticket] });
+    ])).toMatchObject({ items: [ticketListItem] });
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).endsWith(`/tickets/${ticket.ticketId}`))).toBe(true);
     expect(queryClient.getQueryData([
       "users", session.userId, "support", "ticket", ticket.ticketId, "comments",
       { page: 0, size: 50 },
@@ -179,7 +199,7 @@ describe("TicketWorkspace", () => {
         return response(page(posted ? [comment] : [], 50));
       }
       if (url.endsWith(`/tickets/${ticket.ticketId}`)) return response(ticket);
-      if (url.includes("/tickets?page=")) return response(page([ticket], 20));
+      if (url.includes("/tickets?page=")) return response(page([ticketListItem], 20));
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -223,16 +243,35 @@ describe("TicketWorkspace", () => {
     expect(fetchMock.mock.calls.every((call) => !String(call[0]).includes("not-a-uuid"))).toBe(true);
   });
 
-  it("fails closed for unexpected list fields and foreign ticket ownership", async () => {
+  it("fails closed when a list item contains description", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(page([{
+      ...ticketListItem,
+      description: ticket.description,
+    }], 20))));
+    renderWorkspace();
+
+    expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
+    expect(screen.queryByText(ticket.summary)).toBeNull();
+  });
+
+  it("fails closed for another unexpected list item field", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(page([{
+      ...ticketListItem,
+      internalNotes: [],
+    }], 20))));
+    renderWorkspace();
+
+    expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
+    expect(screen.queryByText(ticket.summary)).toBeNull();
+  });
+
+  it("fails closed for foreign ticket ownership", async () => {
     const foreign = {
-      ...ticket,
+      ...ticketListItem,
       requesterUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
       createdByUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
     };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
-      ...page([foreign], 20),
-      internalNotes: [],
-    })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(page([foreign], 20))));
     renderWorkspace();
 
     expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
@@ -240,7 +279,7 @@ describe("TicketWorkspace", () => {
   });
 
   it("fails closed when a public comment claims a different author", async () => {
-    vi.stubGlobal("fetch", mockApi([ticket], [{
+    vi.stubGlobal("fetch", mockApi([ticketListItem], [{
       ...comment,
       authorUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
     }]));
