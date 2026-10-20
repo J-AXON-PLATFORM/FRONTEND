@@ -26,6 +26,31 @@ export type TicketCreate = {
   assetId?: string;
 };
 
+export type TicketPage = {
+  items: Ticket[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+};
+
+export type TicketComment = {
+  commentId: string;
+  ticketId: string;
+  visibility: "PUBLIC";
+  authorUserId: string;
+  body: string;
+  createdAt: string;
+};
+
+export type TicketCommentPage = {
+  items: TicketComment[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UTC_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
@@ -44,6 +69,16 @@ async function readTicket(response: Response, expectedRequesterUserId: string): 
     throw new ApiError(response.status, problem);
   }
   return parseTicket(await response.json(), expectedRequesterUserId);
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  if (!response.ok) {
+    const problem = response.headers.get("content-type")?.includes("application/problem+json")
+      ? await response.json() as { code: string; correlationId: string; detail?: string }
+      : undefined;
+    throw new ApiError(response.status, problem);
+  }
+  return response.json();
 }
 
 export function parseTicket(value: unknown, expectedRequesterUserId: string): Ticket {
@@ -121,4 +156,147 @@ export async function getTicket(ticketId: string, requesterUserId: string): Prom
   return readTicket(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}`, {
     credentials: "include",
   }), requesterUserId);
+}
+
+export async function listTickets(page: number, size: number, requesterUserId: string): Promise<TicketPage> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets?page=${page}&size=${size}`, {
+    credentials: "include",
+  }));
+  return parseTicketPage(value, page, size, requesterUserId);
+}
+
+export async function listTicketComments(
+  ticketId: string,
+  page: number,
+  size: number,
+  requesterUserId: string,
+): Promise<TicketCommentPage> {
+  const value = await readJson(await fetch(
+    `${apiUrl}/tickets/${encodeURIComponent(ticketId)}/comments?page=${page}&size=${size}`,
+    { credentials: "include" },
+  ));
+  return parseTicketCommentPage(value, ticketId, page, size, requesterUserId);
+}
+
+export async function addTicketComment(
+  ticketId: string,
+  body: string,
+  csrfToken: string,
+  requesterUserId: string,
+): Promise<TicketComment> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}/comments`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ body }),
+  }));
+  return parseTicketComment(value, ticketId, requesterUserId);
+}
+
+export function parseTicketPage(
+  value: unknown,
+  expectedPage: number,
+  expectedSize: number,
+  expectedRequesterUserId: string,
+): TicketPage {
+  if (!isPage(value, expectedPage, expectedSize, 50)
+      || !value.items.every((item) => isRecord(item))) {
+    throw new TicketContractError();
+  }
+  const items = value.items.map((item) => parseTicket(item, expectedRequesterUserId));
+  if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
+    throw new TicketContractError();
+  }
+  return { ...value, items } as TicketPage;
+}
+
+export function parseTicketCommentPage(
+  value: unknown,
+  expectedTicketId: string,
+  expectedPage: number,
+  expectedSize: number,
+  expectedRequesterUserId: string,
+): TicketCommentPage {
+  if (!isPage(value, expectedPage, expectedSize, 100)
+      || !value.items.every((item) => isRecord(item))) {
+    throw new TicketContractError();
+  }
+  const items = value.items.map((item) => parseTicketComment(
+    item, expectedTicketId, expectedRequesterUserId,
+  ));
+  if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
+    throw new TicketContractError();
+  }
+  return { ...value, items } as TicketCommentPage;
+}
+
+function validPageContents(
+  value: { totalElements: number; totalPages: number },
+  itemCount: number,
+  page: number,
+  size: number,
+) {
+  const totalPages = Math.ceil(value.totalElements / size);
+  if (value.totalPages !== totalPages) return false;
+  const expectedItems = page >= totalPages
+    ? 0
+    : Math.min(size, value.totalElements - page * size);
+  return itemCount === expectedItems;
+}
+
+function parseTicketComment(
+  value: unknown,
+  expectedTicketId: string,
+  expectedRequesterUserId: string,
+): TicketComment {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "commentId", "ticketId", "visibility", "authorUserId", "body", "createdAt",
+  ]);
+  if (Object.keys(value).length !== expected.size
+      || Object.keys(value).some((key) => !expected.has(key))
+      || !isUuid(value.commentId)
+      || value.ticketId !== expectedTicketId
+      || value.visibility !== "PUBLIC"
+      || value.authorUserId !== expectedRequesterUserId
+      || !isText(value.body, 10_000)
+      || !isUtc(value.createdAt)) {
+    throw new TicketContractError();
+  }
+  return value as TicketComment;
+}
+
+function isPage(
+  value: unknown,
+  expectedPage: number,
+  expectedSize: number,
+  maximumSize: number,
+): value is Record<string, unknown> & {
+  items: unknown[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+} {
+  if (!isRecord(value)) return false;
+  const expected = new Set(["items", "page", "size", "totalElements", "totalPages"]);
+  return Object.keys(value).length === expected.size
+    && Object.keys(value).every((key) => expected.has(key))
+    && Array.isArray(value.items)
+    && value.page === expectedPage
+    && Number.isInteger(value.page)
+    && value.page >= 0
+    && value.size === expectedSize
+    && Number.isInteger(value.size)
+    && value.size >= 1
+    && value.size <= maximumSize
+    && typeof value.totalElements === "number"
+    && Number.isInteger(value.totalElements)
+    && value.totalElements >= 0
+    && typeof value.totalPages === "number"
+    && Number.isInteger(value.totalPages)
+    && value.totalPages >= 0;
 }

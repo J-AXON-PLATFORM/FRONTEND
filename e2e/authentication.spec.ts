@@ -93,6 +93,34 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const queriedTicketCard = page.getByRole("article", { name: "Consulta del ticket por ID" });
   await expect(queriedTicketCard.getByRole("heading", { name: ticketSummary })).toBeVisible();
   await expect(queriedTicketCard).toContainText(ticketDescription);
+  await expect(page.getByRole("button", { name: new RegExp(ticketSummary) })).toBeVisible();
+  await expect(page.getByText("Aún no hay comentarios públicos.")).toBeVisible();
+
+  const ticketComment = "E2E public follow-up: technician visit requested.";
+  const commentResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}/comments`)
+      && response.request().method() === "POST"
+  ));
+  await page.getByLabel("Añadir comentario público").fill(ticketComment);
+  await page.getByRole("button", { name: "Publicar comentario" }).click();
+  expect((await commentResponse).status()).toBe(201);
+  await expect(page.getByText(ticketComment)).toBeVisible();
+
+  const persistedComment = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT c.visibility || ':' || c.body || ':' ||
+      (c.author_user_id = t.requester_user_id)::text || ':' ||
+      (SELECT count(*) FROM support.outbox_events e
+       WHERE e.event_type = 'TICKET_COMMENT_ADDED' AND e.resource_id = t.id
+         AND e.payload->>'commentId' = c.id::text
+         AND e.payload->>'visibility' = 'PUBLIC'
+         AND NOT e.payload ? 'body' AND NOT e.payload ? 'summary' AND NOT e.payload ? 'description')
+      FROM support.ticket_comments c
+      JOIN support.tickets t ON t.id = c.ticket_id
+      WHERE c.ticket_id = '${ticketId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedComment).toBe(`PUBLIC:${ticketComment}:true:1`);
 
   const preRegisterResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/agents") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Pre-registrar Agent" }).click();

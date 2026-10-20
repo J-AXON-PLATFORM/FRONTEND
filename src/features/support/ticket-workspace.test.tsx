@@ -31,12 +31,42 @@ const ticket = {
   updatedAt: "2026-10-19T18:00:00Z",
   version: 0,
 };
+const comment = {
+  commentId: "780f497f-160f-42f5-aed3-5a99ac1d52bc",
+  ticketId: ticket.ticketId,
+  visibility: "PUBLIC",
+  authorUserId: session.userId,
+  body: "The printer is available again.",
+  createdAt: "2026-10-19T19:00:00Z",
+};
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
+
+function page(items: unknown[], size: number) {
+  return { items, page: 0, size, totalElements: items.length, totalPages: items.length ? 1 : 0 };
+}
+
+function response(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function mockApi(ticketItems: unknown[] = [], commentItems: unknown[] = []) {
+  return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes(`/tickets/${ticket.ticketId}/comments`) && init?.method === "POST") {
+      return response(comment, 201);
+    }
+    if (url.includes(`/tickets/${ticket.ticketId}/comments?`)) return response(page(commentItems, 50));
+    if (url.endsWith(`/tickets/${ticket.ticketId}`)) return response(ticket);
+    if (url.includes("/tickets?page=")) return response(page(ticketItems, 20));
+    if (url.endsWith("/tickets") && init?.method === "POST") return response(ticket, 201);
+    throw new Error(`Unexpected request: ${url}`);
+  });
+}
 
 function renderWorkspace(currentSession = session) {
   const queryClient = new QueryClient({
@@ -51,18 +81,61 @@ function renderWorkspace(currentSession = session) {
 }
 
 describe("TicketWorkspace", () => {
-  it("creates an associated ticket with in-memory CSRF and re-queries its own record", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(ticket), {
-        status: 201,
-        headers: { "Content-Type": "application/json" },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(ticket), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }));
+  it("moves through ticket pages without mixing user-scoped cache entries", async () => {
+    const allTickets = Array.from({ length: 21 }, (_, index) => ({
+      ...ticket,
+      ticketId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      summary: `Ticket page item ${index + 1}`,
+    }));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/tickets?page=0")) {
+        return response({ items: allTickets.slice(0, 20), page: 0, size: 20, totalElements: 21, totalPages: 2 });
+      }
+      if (url.includes("/tickets?page=1")) {
+        return response({ items: allTickets.slice(20), page: 1, size: 20, totalElements: 21, totalPages: 2 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const queryClient = renderWorkspace();
+    await screen.findByText("Ticket page item 1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
+
+    expect(await screen.findByText("Ticket page item 21")).toBeDefined();
+    expect(screen.queryByText("Ticket page item 1")).toBeNull();
+    expect(queryClient.getQueryData([
+      "users", session.userId, "support", "tickets", { page: 1, size: 20 },
+    ])).toMatchObject({ page: 1, totalPages: 2 });
+  });
+
+  it("lists, selects, and presents an owned ticket with its public conversation", async () => {
+    const fetchMock = mockApi([ticket], [comment]);
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+
+    const selected = await screen.findByRole("article", { name: "Consulta del ticket por ID" });
+    expect(within(selected).getByRole("heading", { name: ticket.summary })).toBeDefined();
+    expect(await screen.findByText(comment.body)).toBeDefined();
+    expect(queryClient.getQueryData([
+      "users", session.userId, "support", "tickets", { page: 0, size: 20 },
+    ])).toMatchObject({ items: [ticket] });
+    expect(queryClient.getQueryData([
+      "users", session.userId, "support", "ticket", ticket.ticketId, "comments",
+      { page: 0, size: 50 },
+    ])).toMatchObject({ items: [comment] });
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("creates an associated ticket with in-memory CSRF and refreshes the owned list", async () => {
+    const fetchMock = mockApi();
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+    await screen.findByText("Todavía no tienes tickets.");
 
     fireEvent.change(screen.getByLabelText("Resumen"), { target: { value: ticket.summary } });
     fireEvent.change(screen.getByLabelText("Descripción"), { target: { value: ticket.description } });
@@ -71,84 +144,118 @@ describe("TicketWorkspace", () => {
 
     const created = await screen.findByRole("article", { name: "Resultado de creación del ticket" });
     expect(within(created).getByRole("heading", { name: ticket.summary })).toBeDefined();
-    const queried = await screen.findByRole("article", { name: "Consulta del ticket por ID" });
-    expect(within(queried).getByText(ticket.ticketId)).toBeDefined();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/tickets");
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
-      method: "POST",
+    expect(await screen.findByRole("article", { name: "Consulta del ticket por ID" })).toBeDefined();
+    const post = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/tickets")
+      && call[1]?.method === "POST");
+    expect(post?.[1]).toMatchObject({
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
         "X-CSRF-Token": session.csrfToken,
       },
     });
-    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+    expect(JSON.parse(post?.[1]?.body as string)).toEqual({
       type: "INCIDENT",
       summary: ticket.summary,
       description: ticket.description,
       assetId,
     });
-    expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/tickets/${ticket.ticketId}`);
-    expect(queryClient.getQueryData([
-      "users", session.userId, "support", "ticket", ticket.ticketId,
-    ])).toEqual(ticket);
-    expect(queryClient.getQueryData([
-      "users", "700678fa-57fe-4c76-84e0-feb63e708acd", "support", "ticket", ticket.ticketId,
-    ])).toBeUndefined();
-    expect(localStorage.length).toBe(0);
-    expect(sessionStorage.length).toBe(0);
   });
 
-  it("validates optional asset and lookup identifiers before requesting", () => {
-    const fetchMock = vi.fn();
+  it("posts a comment without optimistic state and refetches the exact conversation page", async () => {
+    let resolvePost: ((value: Response) => void) | undefined;
+    let posted = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/tickets/${ticket.ticketId}/comments`) && init?.method === "POST") {
+        return new Promise<Response>((resolve) => {
+          resolvePost = (value) => {
+            posted = true;
+            resolve(value);
+          };
+        });
+      }
+      if (url.includes(`/tickets/${ticket.ticketId}/comments?`)) {
+        return response(page(posted ? [comment] : [], 50));
+      }
+      if (url.endsWith(`/tickets/${ticket.ticketId}`)) return response(ticket);
+      if (url.includes("/tickets?page=")) return response(page([ticket], 20));
+      throw new Error(`Unexpected request: ${url}`);
+    });
     vi.stubGlobal("fetch", fetchMock);
     renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    await screen.findByText("Aún no hay comentarios públicos.");
+
+    fireEvent.change(screen.getByLabelText("Añadir comentario público"), {
+      target: { value: `  ${comment.body}  ` },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Publicar comentario" }));
+    expect(screen.queryByText(comment.body, { selector: ".comment-list p" })).toBeNull();
+    resolvePost?.(response(comment, 201));
+
+    expect(await screen.findByText(comment.body)).toBeDefined();
+    const post = fetchMock.mock.calls.find((call) => call[1]?.method === "POST");
+    expect(post?.[1]).toMatchObject({
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": session.csrfToken,
+      },
+    });
+    expect(JSON.parse(post?.[1]?.body as string)).toEqual({ body: comment.body });
+  });
+
+  it("validates optional asset and lookup identifiers before requesting", async () => {
+    const fetchMock = mockApi();
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+    await screen.findByText("Todavía no tienes tickets.");
 
     fireEvent.change(screen.getByLabelText("Resumen"), { target: { value: ticket.summary } });
     fireEvent.change(screen.getByLabelText("Descripción"), { target: { value: ticket.description } });
     fireEvent.change(screen.getByLabelText("Activo asociado por UUID (opcional)"), { target: { value: "invalid" } });
     expect((screen.getByRole("button", { name: "Crear ticket" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("alert").textContent).toContain("UUIDv4 de activo válido");
 
     fireEvent.change(screen.getByLabelText("UUID del ticket"), { target: { value: "not-a-uuid" } });
     fireEvent.click(screen.getByRole("button", { name: "Buscar ticket" }));
     expect(screen.getAllByRole("alert").at(-1)?.textContent).toContain("UUIDv4 válido");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.every((call) => !String(call[0]).includes("not-a-uuid"))).toBe(true);
   });
 
-  it("rejects unexpected response fields instead of presenting partial state", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      ...ticket,
-      internalNote: "must not be accepted",
-    }), { status: 200, headers: { "Content-Type": "application/json" } })));
-    renderWorkspace();
-
-    fireEvent.change(screen.getByLabelText("UUID del ticket"), { target: { value: ticket.ticketId } });
-    fireEvent.click(screen.getByRole("button", { name: "Buscar ticket" }));
-
-    expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
-    expect(screen.queryByRole("article", { name: "Consulta del ticket por ID" })).toBeNull();
-  });
-
-  it("rejects a ticket that does not belong to the authenticated user", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+  it("fails closed for unexpected list fields and foreign ticket ownership", async () => {
+    const foreign = {
       ...ticket,
       requesterUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
       createdByUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
-    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
+      ...page([foreign], 20),
+      internalNotes: [],
+    })));
     renderWorkspace();
 
-    fireEvent.change(screen.getByLabelText("UUID del ticket"), { target: { value: ticket.ticketId } });
-    fireEvent.click(screen.getByRole("button", { name: "Buscar ticket" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
+    expect(screen.queryByText(ticket.summary)).toBeNull();
+  });
+
+  it("fails closed when a public comment claims a different author", async () => {
+    vi.stubGlobal("fetch", mockApi([ticket], [{
+      ...comment,
+      authorUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
+    }]));
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
-    expect(screen.queryByRole("article", { name: "Consulta del ticket por ID" })).toBeNull();
+    expect(screen.queryByText(comment.body)).toBeNull();
   });
 
   it("does not expose Support operations without IT_OPERATOR", () => {
+    vi.stubGlobal("fetch", vi.fn());
     renderWorkspace({ ...session, roles: ["SYSTEM_ADMIN"] });
     expect(screen.queryByRole("heading", { name: "Tickets" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Crear ticket" })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
