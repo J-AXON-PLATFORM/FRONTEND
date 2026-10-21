@@ -206,6 +206,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const technicianTicketCard = page.getByRole("article", { name: "Detalle técnico del ticket" });
   await expect(technicianTicketCard).toContainText(ticketDescription);
   await expect(page.getByText(ticketComment)).toBeVisible();
+  await expect(page.getByLabel("Visibilidad", { exact: true })).not.toBeVisible();
 
   const claimResponse = page.waitForResponse((response) => (
     response.url().endsWith(`/api/v1/tickets/${ticketId}/claim`)
@@ -215,6 +216,57 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   expect((await claimResponse).status()).toBe(200);
   await expect(technicianTicketCard).toContainText("Asignado a ti");
   await expect(technicianTicketCard).toContainText("Versión1");
+
+  const internalNote = "E2E internal diagnosis: replace the pickup roller.";
+  const technicianPublicComment = "E2E technician public update: repair scheduled.";
+  const visibility = page.getByLabel("Visibilidad", { exact: true });
+  const technicianCommentBody = page.getByLabel("Comentario técnico");
+  await expect(visibility).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Añadir a la conversación" })).toBeDisabled();
+
+  const internalResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/technician-queue/${ticketId}/conversation`)
+      && response.request().method() === "POST"
+  ));
+  await visibility.selectOption("INTERNAL");
+  await technicianCommentBody.fill(internalNote);
+  await page.getByRole("button", { name: "Añadir a la conversación" }).click();
+  expect((await internalResponse).status()).toBe(201);
+  await expect(page.getByText(internalNote)).toBeVisible();
+  await expect(page.getByLabel("Visibilidad: interno")).toBeVisible();
+  await expect(visibility).toHaveValue("");
+  await expect(technicianCommentBody).toHaveValue("");
+
+  const technicianPublicResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/technician-queue/${ticketId}/conversation`)
+      && response.request().method() === "POST"
+  ));
+  await visibility.selectOption("PUBLIC");
+  await technicianCommentBody.fill(technicianPublicComment);
+  await page.getByRole("button", { name: "Añadir a la conversación" }).click();
+  expect((await technicianPublicResponse).status()).toBe(201);
+  await expect(page.getByText(technicianPublicComment)).toBeVisible();
+  await expect(page.getByLabel("Visibilidad: público").last()).toBeVisible();
+
+  const persistedTechnicalConversation = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT string_agg(c.visibility || ':' || c.body || ':' ||
+        (c.author_user_id = u.id)::text || ':' ||
+        (e.actor_id = u.id)::text || ':' ||
+        (e.payload = jsonb_build_object('commentId', c.id::text, 'visibility', c.visibility))::text || ':' ||
+        (NOT e.payload ? 'body' AND NOT e.payload ? 'summary' AND NOT e.payload ? 'description')::text,
+        '|' ORDER BY c.created_at, c.id)
+      FROM support.ticket_comments c
+      JOIN support.tickets t ON t.id = c.ticket_id
+      JOIN identity.human_users u ON u.normalized_username = '${supportUsername}'
+      JOIN support.outbox_events e ON e.event_type = 'TICKET_COMMENT_ADDED'
+        AND e.resource_id = c.ticket_id AND e.payload->>'commentId' = c.id::text
+      WHERE c.ticket_id = '${ticketId}' AND c.author_user_id = u.id`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedTechnicalConversation).toBe(
+    `INTERNAL:${internalNote}:true:true:true:true|PUBLIC:${technicianPublicComment}:true:true:true:true`,
+  );
 
   const persistedClaim = execFileSync("docker", [
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
@@ -245,6 +297,22 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.getByLabel("Contraseña").fill(password!);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();
+
+  const requesterConversationResponse = page.waitForResponse((response) => (
+    response.url().includes(`/api/v1/tickets/${ticketId}/comments?`)
+      && response.request().method() === "GET"
+  ));
+  await page.getByRole("button", { name: new RegExp(ticketSummary) }).click();
+  const requesterConversation = await (await requesterConversationResponse).json() as {
+    items: Array<{ visibility: string; body: string }>;
+  };
+  expect(requesterConversation.items.map((item) => item.body)).toContain(technicianPublicComment);
+  expect(requesterConversation.items.map((item) => item.body)).not.toContain(internalNote);
+  expect(requesterConversation.items.every((item) => item.visibility === "PUBLIC")).toBe(true);
+  await expect(page.getByText(technicianPublicComment)).toBeVisible();
+  await expect(page.getByText(internalNote)).not.toBeVisible();
+  expect(await page.locator("body").textContent()).not.toContain(internalNote);
+
   await page.getByLabel("UUID del activo").fill(assetId);
   await page.getByRole("button", { name: "Consultar", exact: true }).click();
   await expect(page.getByRole("article", { name: "Consulta por ID" })).toContainText(assetName);

@@ -278,16 +278,30 @@ describe("TicketWorkspace", () => {
     expect(screen.queryByText(ticket.summary)).toBeNull();
   });
 
-  it("fails closed when a public comment claims a different author", async () => {
+  it("shows a PUBLIC comment written by the assigned technician", async () => {
     vi.stubGlobal("fetch", mockApi([ticketListItem], [{
       ...comment,
       authorUserId: "3495af6f-a455-4310-86f8-79a12be536d5",
+      body: "The assigned technician scheduled the repair.",
+    }]));
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+
+    expect(await screen.findByText("The assigned technician scheduled the repair.")).toBeDefined();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("fails closed when the requester conversation contains INTERNAL visibility", async () => {
+    vi.stubGlobal("fetch", mockApi([ticketListItem], [{
+      ...comment,
+      visibility: "INTERNAL",
+      body: "Technician-only diagnosis.",
     }]));
     renderWorkspace();
     fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
-    expect(screen.queryByText(comment.body)).toBeNull();
+    expect(screen.queryByText("Technician-only diagnosis.")).toBeNull();
   });
 
   it("does not expose Support operations without IT_OPERATOR", () => {
