@@ -31,6 +31,59 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page.getByText("IT OPERATOR")).toBeVisible();
   await expect(page.getByText("SYSTEM ADMIN")).toBeVisible();
 
+  const supportUsername = `support.only.${Date.now()}`;
+  const supportPassword = `Support-${crypto.randomUUID()}-Aa9!`;
+  const createUserResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/users") && response.request().method() === "POST"
+  ));
+  await page.getByLabel("Usuario", { exact: true }).fill(supportUsername);
+  await page.getByLabel("Contraseña inicial").fill(supportPassword);
+  await page.getByLabel(/Atención técnica/).check();
+  await page.getByRole("button", { name: "Crear usuario" }).click();
+  expect((await createUserResponse).status()).toBe(201);
+  const createdUserCard = page.getByRole("article", { name: "Usuario creado" });
+  await expect(createdUserCard).toContainText(supportUsername);
+  await expect(createdUserCard).toContainText("SUPPORT_TECHNICIAN");
+  await expect(page.getByLabel("Contraseña inicial")).toHaveValue("");
+  const persistedSupportUser = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT u.status || ':' || string_agg(r.role_code, ',' ORDER BY r.role_code) || ':' ||
+      (SELECT count(*) FROM identity.outbox_events e
+       WHERE e.event_type = 'HUMAN_USER_CREATED' AND e.resource_id = u.id
+         AND e.payload = '{"status":"ACTIVE"}'::jsonb)
+      FROM identity.human_users u
+      JOIN identity.human_user_roles r ON r.user_id = u.id
+      WHERE u.normalized_username = '${supportUsername}'
+      GROUP BY u.id`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedSupportUser).toBe("ACTIVE:SUPPORT_TECHNICIAN:1");
+
+  const adminLogoutResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Cerrar sesión" }).click();
+  expect((await adminLogoutResponse).status()).toBe(204);
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByLabel("Usuario").fill(supportUsername);
+  await page.getByLabel("Contraseña").fill(supportPassword);
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
+  await expect(page).toHaveURL("/");
+  await expect(page.getByRole("heading", { name: supportUsername })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Usuarios humanos" })).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Activos" })).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Tickets de soporte" })).not.toBeVisible();
+  const supportLogoutResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Cerrar sesión" }).click();
+  expect((await supportLogoutResponse).status()).toBe(204);
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByLabel("Usuario").fill(username!);
+  await page.getByLabel("Contraseña").fill(password!);
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
+  await expect(page).toHaveURL("/");
+
   const assetName = `E2E Workstation ${Date.now()}`;
   const createResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/assets") && response.request().method() === "POST");
   await page.getByLabel("Nombre").fill(assetName);

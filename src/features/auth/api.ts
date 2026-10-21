@@ -47,3 +47,17 @@ export async function getCurrentSession(): Promise<Session> {
     credentials: "include",
   }));
 }
+
+export async function logout(csrfToken: string): Promise<void> {
+  const response = await fetch(`${apiUrl}/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrfToken },
+  });
+  if (response.status !== 204) {
+    const problem = response.headers.get("content-type")?.includes("application/problem+json")
+      ? await response.json() as Problem
+      : undefined;
+    throw new ApiError(response.status, problem);
+  }
+}

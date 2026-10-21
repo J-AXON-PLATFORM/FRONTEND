@@ -1,6 +1,8 @@
 "use client";
 
 import { ApiError, getCurrentSession } from "@/features/auth/api";
+import { LogoutButton } from "@/features/auth/logout-button";
+import { UserAdministration } from "@/features/administration/user-administration";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
 import { TicketWorkspace } from "@/features/support/ticket-workspace";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,7 +36,10 @@ export default function HomePage() {
     <main className="session-shell">
       <header className="session-header">
         <p className="eyebrow">Sesión activa</p>
-        <span className="status-dot">Conectado</span>
+        <div className="session-actions">
+          <span className="status-dot">Conectado</span>
+          <LogoutButton csrfToken={session.data.csrfToken} />
+        </div>
       </header>
       <section className="identity-card" aria-labelledby="identity-title">
         <p className="sequence">Identidad verificada</p>
@@ -44,8 +49,9 @@ export default function HomePage() {
           {session.data.roles.map((role) => <li key={role}>{role.replaceAll("_", " ")}</li>)}
         </ul>
       </section>
-      <AssetWorkspace session={session.data} />
-      <TicketWorkspace session={session.data} />
+      {session.data.roles.includes("SYSTEM_ADMIN") && <UserAdministration session={session.data} />}
+      {session.data.roles.includes("IT_OPERATOR") && <AssetWorkspace session={session.data} />}
+      {session.data.roles.includes("IT_OPERATOR") && <TicketWorkspace session={session.data} />}
     </main>
   );
 }
