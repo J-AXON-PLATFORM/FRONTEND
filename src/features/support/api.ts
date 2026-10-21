@@ -1,38 +1,40 @@
 import { ApiError } from "@/features/auth/api";
 
 export type TicketType = "INCIDENT" | "SERVICE_REQUEST" | "QUESTION" | "OTHER";
+export type TicketStatus = "OPEN" | "IN_PROGRESS" | "WAITING_FOR_REQUESTER" | "RESOLVED" | "CLOSED";
+export type TicketPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 
 export type Ticket = {
   ticketId: string;
   type: TicketType;
   summary: string;
   description: string;
-  status: "OPEN";
-  priority: "NORMAL";
+  status: TicketStatus;
+  priority: TicketPriority;
   source: "WEB";
   requesterUserId: string;
   createdByUserId: string;
-  assigneeUserId: null;
+  assigneeUserId: string | null;
   assetId: string | null;
   createdAt: string;
   updatedAt: string;
-  version: 0;
+  version: number;
 };
 
 export type TicketListItem = {
   ticketId: string;
   type: TicketType;
   summary: string;
-  status: "OPEN";
-  priority: "NORMAL";
+  status: TicketStatus;
+  priority: TicketPriority;
   source: "WEB";
   requesterUserId: string;
   createdByUserId: string;
-  assigneeUserId: null;
+  assigneeUserId: string | null;
   assetId: string | null;
   createdAt: string;
   updatedAt: string;
-  version: 0;
+  version: number;
 };
 
 export type TicketCreate = {
@@ -110,18 +112,18 @@ export function parseTicket(value: unknown, expectedRequesterUserId: string): Ti
       || !isTicketType(value.type)
       || !isText(value.summary, 256)
       || !isText(value.description, 10_000)
-      || value.status !== "OPEN"
-      || value.priority !== "NORMAL"
+      || !isTicketStatus(value.status)
+      || !isTicketPriority(value.priority)
       || value.source !== "WEB"
       || !isUuid(value.requesterUserId)
       || value.requesterUserId !== expectedRequesterUserId
       || value.createdByUserId !== value.requesterUserId
-      || value.assigneeUserId !== null
+      || (value.assigneeUserId !== null && !isUuid(value.assigneeUserId))
       || (value.assetId !== null && !isUuid(value.assetId))
       || !isUtc(value.createdAt)
       || !isUtc(value.updatedAt)
-      || value.updatedAt !== value.createdAt
-      || value.version !== 0) {
+      || Date.parse(value.updatedAt as string) < Date.parse(value.createdAt as string)
+      || !isVersion(value.version)) {
     throw new TicketContractError();
   }
   return value as Ticket;
@@ -138,18 +140,18 @@ function parseTicketListItem(value: unknown, expectedRequesterUserId: string): T
       || !isUuid(value.ticketId)
       || !isTicketType(value.type)
       || !isText(value.summary, 256)
-      || value.status !== "OPEN"
-      || value.priority !== "NORMAL"
+      || !isTicketStatus(value.status)
+      || !isTicketPriority(value.priority)
       || value.source !== "WEB"
       || !isUuid(value.requesterUserId)
       || value.requesterUserId !== expectedRequesterUserId
       || value.createdByUserId !== value.requesterUserId
-      || value.assigneeUserId !== null
+      || (value.assigneeUserId !== null && !isUuid(value.assigneeUserId))
       || (value.assetId !== null && !isUuid(value.assetId))
       || !isUtc(value.createdAt)
       || !isUtc(value.updatedAt)
-      || value.updatedAt !== value.createdAt
-      || value.version !== 0) {
+      || Date.parse(value.updatedAt as string) < Date.parse(value.createdAt as string)
+      || !isVersion(value.version)) {
     throw new TicketContractError();
   }
   return value as TicketListItem;
@@ -173,6 +175,19 @@ function isText(value: unknown, maxLength: number): value is string {
 
 function isTicketType(value: unknown): value is TicketType {
   return value === "INCIDENT" || value === "SERVICE_REQUEST" || value === "QUESTION" || value === "OTHER";
+}
+
+function isTicketStatus(value: unknown): value is TicketStatus {
+  return value === "OPEN" || value === "IN_PROGRESS" || value === "WAITING_FOR_REQUESTER"
+    || value === "RESOLVED" || value === "CLOSED";
+}
+
+function isTicketPriority(value: unknown): value is TicketPriority {
+  return value === "LOW" || value === "NORMAL" || value === "HIGH" || value === "URGENT";
+}
+
+function isVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 export async function createTicket(
@@ -240,6 +255,59 @@ export async function addTicketComment(
   return parseTicketComment(value, ticketId, requesterUserId);
 }
 
+export async function listTechnicianQueue(
+  page: number,
+  size: number,
+  technicianUserId: string,
+): Promise<TicketPage> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/technician-queue?page=${page}&size=${size}`, {
+    credentials: "include",
+  }));
+  return parseTechnicianTicketPage(value, page, size, technicianUserId);
+}
+
+export async function getTechnicianTicket(ticketId: string, technicianUserId: string): Promise<Ticket> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/technician-queue/${encodeURIComponent(ticketId)}`, {
+    credentials: "include",
+  }));
+  return parseTechnicianTicket(value, technicianUserId);
+}
+
+export async function listTechnicianTicketComments(
+  ticketId: string,
+  page: number,
+  size: number,
+  technicianUserId: string,
+): Promise<TicketCommentPage> {
+  const value = await readJson(await fetch(
+    `${apiUrl}/tickets/technician-queue/${encodeURIComponent(ticketId)}/comments?page=${page}&size=${size}`,
+    { credentials: "include" },
+  ));
+  return parseTechnicianCommentPage(value, ticketId, page, size, technicianUserId);
+}
+
+export async function claimTicket(
+  ticketId: string,
+  expectedVersion: number,
+  csrfToken: string,
+  technicianUserId: string,
+): Promise<Ticket> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}/claim`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ expectedVersion }),
+  }));
+  const ticket = parseTechnicianTicket(value, technicianUserId);
+  if (ticket.assigneeUserId !== technicianUserId || ticket.version < expectedVersion) {
+    throw new TicketContractError();
+  }
+  return ticket;
+}
+
 export function parseTicketPage(
   value: unknown,
   expectedPage: number,
@@ -275,6 +343,126 @@ export function parseTicketCommentPage(
     throw new TicketContractError();
   }
   return { ...value, items } as TicketCommentPage;
+}
+
+export function parseTechnicianTicketPage(
+  value: unknown,
+  expectedPage: number,
+  expectedSize: number,
+  technicianUserId: string,
+): TicketPage {
+  if (!isPage(value, expectedPage, expectedSize, 50)
+      || !value.items.every((item) => isRecord(item))) {
+    throw new TicketContractError();
+  }
+  const items = value.items.map((item) => parseTechnicianListItem(item, technicianUserId));
+  if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
+    throw new TicketContractError();
+  }
+  return { ...value, items } as TicketPage;
+}
+
+export function parseTechnicianTicket(value: unknown, technicianUserId: string): Ticket {
+  const ticket = parseGeneralTicket(value);
+  if (ticket.status === "CLOSED"
+      || (ticket.assigneeUserId !== null && ticket.assigneeUserId !== technicianUserId)) {
+    throw new TicketContractError();
+  }
+  return ticket;
+}
+
+function parseTechnicianListItem(value: unknown, technicianUserId: string): TicketListItem {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "ticketId", "type", "summary", "status", "priority", "source", "requesterUserId",
+    "createdByUserId", "assigneeUserId", "assetId", "createdAt", "updatedAt", "version",
+  ]);
+  if (Object.keys(value).length !== expected.size
+      || Object.keys(value).some((key) => !expected.has(key))
+      || !isUuid(value.ticketId)
+      || !isTicketType(value.type)
+      || !isText(value.summary, 256)
+      || !isTicketStatus(value.status)
+      || value.status === "CLOSED"
+      || !isTicketPriority(value.priority)
+      || value.source !== "WEB"
+      || !isUuid(value.requesterUserId)
+      || value.createdByUserId !== value.requesterUserId
+      || (value.assigneeUserId !== null && value.assigneeUserId !== technicianUserId)
+      || (value.assetId !== null && !isUuid(value.assetId))
+      || !isUtc(value.createdAt)
+      || !isUtc(value.updatedAt)
+      || Date.parse(value.updatedAt as string) < Date.parse(value.createdAt as string)
+      || !isVersion(value.version)) {
+    throw new TicketContractError();
+  }
+  return value as TicketListItem;
+}
+
+function parseGeneralTicket(value: unknown): Ticket {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "ticketId", "type", "summary", "description", "status", "priority", "source",
+    "requesterUserId", "createdByUserId", "assigneeUserId", "assetId", "createdAt",
+    "updatedAt", "version",
+  ]);
+  if (Object.keys(value).length !== expected.size
+      || Object.keys(value).some((key) => !expected.has(key))
+      || !isUuid(value.ticketId)
+      || !isTicketType(value.type)
+      || !isText(value.summary, 256)
+      || !isText(value.description, 10_000)
+      || !isTicketStatus(value.status)
+      || !isTicketPriority(value.priority)
+      || value.source !== "WEB"
+      || !isUuid(value.requesterUserId)
+      || value.createdByUserId !== value.requesterUserId
+      || (value.assigneeUserId !== null && !isUuid(value.assigneeUserId))
+      || (value.assetId !== null && !isUuid(value.assetId))
+      || !isUtc(value.createdAt)
+      || !isUtc(value.updatedAt)
+      || Date.parse(value.updatedAt as string) < Date.parse(value.createdAt as string)
+      || !isVersion(value.version)) {
+    throw new TicketContractError();
+  }
+  return value as Ticket;
+}
+
+function parseTechnicianCommentPage(
+  value: unknown,
+  expectedTicketId: string,
+  expectedPage: number,
+  expectedSize: number,
+  technicianUserId: string,
+): TicketCommentPage {
+  if (!isUuid(technicianUserId)
+      || !isPage(value, expectedPage, expectedSize, 100)
+      || !value.items.every((item) => isRecord(item))) {
+    throw new TicketContractError();
+  }
+  const items = value.items.map((item) => parsePublicComment(item, expectedTicketId));
+  if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
+    throw new TicketContractError();
+  }
+  return { ...value, items } as TicketCommentPage;
+}
+
+function parsePublicComment(value: unknown, expectedTicketId: string): TicketComment {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "commentId", "ticketId", "visibility", "authorUserId", "body", "createdAt",
+  ]);
+  if (Object.keys(value).length !== expected.size
+      || Object.keys(value).some((key) => !expected.has(key))
+      || !isUuid(value.commentId)
+      || value.ticketId !== expectedTicketId
+      || value.visibility !== "PUBLIC"
+      || !isUuid(value.authorUserId)
+      || !isText(value.body, 10_000)
+      || !isUtc(value.createdAt)) {
+    throw new TicketContractError();
+  }
+  return value as TicketComment;
 }
 
 function validPageContents(
