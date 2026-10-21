@@ -68,11 +68,12 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.getByLabel("Usuario").fill(supportUsername);
   await page.getByLabel("Contraseña").fill(supportPassword);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
-  await expect(page).toHaveURL("/");
+  await expect(page).toHaveURL(/\/(?:\?page=0&size=20)?$/);
   await expect(page.getByRole("heading", { name: supportUsername })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Usuarios humanos" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Activos" })).not.toBeVisible();
-  await expect(page.getByRole("heading", { name: "Tickets de soporte" })).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Tickets" })).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bandeja técnica" })).toBeVisible();
   const supportLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
   ));
@@ -189,6 +190,64 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       WHERE c.ticket_id = '${ticketId}'`,
   ], { encoding: "utf8" }).trim();
   expect(persistedComment).toBe(`PUBLIC:${ticketComment}:true:1`);
+
+  const requesterLogoutResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Cerrar sesión" }).click();
+  expect((await requesterLogoutResponse).status()).toBe(204);
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByLabel("Usuario", { exact: true }).fill(supportUsername);
+  await page.getByLabel("Contraseña").fill(supportPassword);
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
+  await expect(page.getByRole("heading", { name: "Bandeja técnica" })).toBeVisible();
+  await expect(page).toHaveURL(/\?page=0&size=20$/);
+  await page.getByRole("button", { name: new RegExp(ticketSummary) }).click();
+  const technicianTicketCard = page.getByRole("article", { name: "Detalle técnico del ticket" });
+  await expect(technicianTicketCard).toContainText(ticketDescription);
+  await expect(page.getByText(ticketComment)).toBeVisible();
+
+  const claimResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}/claim`)
+      && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Asignarme ticket" }).click();
+  expect((await claimResponse).status()).toBe(200);
+  await expect(technicianTicketCard).toContainText("Asignado a ti");
+  await expect(technicianTicketCard).toContainText("Versión1");
+
+  const persistedClaim = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT
+      (t.assignee_user_id = u.id)::text || ':' || t.version || ':' || t.status || ':' ||
+      (SELECT count(*) FROM support.outbox_events e
+       WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id) || ':' ||
+      (SELECT bool_and(e.actor_id = u.id AND e.resource_version = 1)
+       FROM support.outbox_events e
+       WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id) || ':' ||
+      (SELECT bool_and(e.payload = jsonb_build_object('assigneeUserId', u.id::text))
+       FROM support.outbox_events e
+       WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id)
+      FROM support.tickets t
+      JOIN identity.human_users u ON u.normalized_username = '${supportUsername}'
+      WHERE t.id = '${ticketId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedClaim).toBe("true:1:OPEN:1:true:true");
+
+  const technicianLogoutResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Cerrar sesión" }).click();
+  expect((await technicianLogoutResponse).status()).toBe(204);
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByLabel("Usuario", { exact: true }).fill(username!);
+  await page.getByLabel("Contraseña").fill(password!);
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
+  await expect(page.getByRole("heading", { name: username! })).toBeVisible();
+  await page.getByLabel("UUID del activo").fill(assetId);
+  await page.getByRole("button", { name: "Consultar", exact: true }).click();
+  await expect(page.getByRole("article", { name: "Consulta por ID" })).toContainText(assetName);
 
   const preRegisterResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/agents") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Pre-registrar Agent" }).click();

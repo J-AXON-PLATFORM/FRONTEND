@@ -5,6 +5,7 @@ import { LogoutButton } from "@/features/auth/logout-button";
 import { UserAdministration } from "@/features/administration/user-administration";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
 import { TicketWorkspace } from "@/features/support/ticket-workspace";
+import { TechnicianTicketWorkspace } from "@/features/support/technician-ticket-workspace";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -52,6 +53,7 @@ export default function HomePage() {
       {session.data.roles.includes("SYSTEM_ADMIN") && <UserAdministration session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <AssetWorkspace session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <TicketWorkspace session={session.data} />}
+      {session.data.roles.includes("SUPPORT_TECHNICIAN") && <TechnicianTicketWorkspace session={session.data} />}
     </main>
   );
 }
