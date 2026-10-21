@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "@/features/auth/api";
+import { parseTechnicianConversationPage, TicketContractError } from "./api";
 import { TechnicianTicketWorkspace } from "./technician-ticket-workspace";
 
 const replace = vi.fn();
@@ -128,6 +129,9 @@ describe("TechnicianTicketWorkspace", () => {
           };
         });
       }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
+        return response(page([comment], 0, 50));
+      }
       if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/comments?`)) return response(page([comment], 0, 50));
       if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(claimed ? claimedTicket : ticket);
       if (url.includes("/tickets/technician-queue?")) {
@@ -144,6 +148,7 @@ describe("TechnicianTicketWorkspace", () => {
     expect(within(detail).getByText(ticket.description)).toBeDefined();
     expect(await screen.findByText(comment.body)).toBeDefined();
     expect(screen.getByText(`Autor ${requesterId}`)).toBeDefined();
+    expect(screen.queryByLabelText("Visibilidad")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Asignarme ticket" }));
     expect(screen.queryByText("Asignado a ti", { selector: "dd" })).toBeNull();
@@ -161,6 +166,9 @@ describe("TechnicianTicketWorkspace", () => {
 
     expect(await screen.findByText("Ticket asignado a tu sesión.")).toBeDefined();
     expect(await screen.findByText("Asignado a ti", { selector: "dd" })).toBeDefined();
+    expect((await screen.findByLabelText("Visibilidad") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByRole("button", { name: "Añadir a la conversación" }) as HTMLButtonElement).disabled)
+      .toBe(true);
     expect(invalidation).toHaveBeenCalledWith({
       queryKey: ["users", session.userId, "support", "technician", "tickets", { page: 0, size: 20 }],
       exact: true,
@@ -169,6 +177,119 @@ describe("TechnicianTicketWorkspace", () => {
       queryKey: ["users", session.userId, "support", "technician", "ticket", ticket.ticketId],
       exact: true,
     });
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("renders the closed combined schema and rejects unknown or extra fields", () => {
+    const internal = {
+      ...comment,
+      commentId: "a1af4e11-415b-4650-adf1-41d4101a8bc0",
+      visibility: "INTERNAL",
+      authorUserId: session.userId,
+      body: "Internal diagnosis",
+    };
+    expect(parseTechnicianConversationPage(
+      page([comment, internal], 0, 50), ticket.ticketId, 0, 50, session.userId,
+    ).items.map((item) => item.visibility)).toEqual(["PUBLIC", "INTERNAL"]);
+    expect(() => parseTechnicianConversationPage(
+      page([{ ...internal, visibility: "SECRET" }], 0, 50), ticket.ticketId, 0, 50, session.userId,
+    )).toThrow(TicketContractError);
+    expect(() => parseTechnicianConversationPage(
+      page([{ ...internal, leaked: true }], 0, 50), ticket.ticketId, 0, 50, session.userId,
+    )).toThrow(TicketContractError);
+  });
+
+  it("posts explicit visibility without retry or optimistic state and preserves input on failure", async () => {
+    const assignedTicket = { ...ticket, assigneeUserId: session.userId, version: 1 };
+    const internal = {
+      ...comment,
+      commentId: "a1af4e11-415b-4650-adf1-41d4101a8bc0",
+      visibility: "INTERNAL",
+      authorUserId: session.userId,
+      body: "Internal diagnosis",
+    };
+    let conversationItems: unknown[] = [comment, internal];
+    let postCount = 0;
+    let resolveSuccessfulPost: ((value: Response) => void) | undefined;
+    const created = {
+      ...comment,
+      commentId: "f4dbbf94-a037-45a5-b70b-66ebd32c7d86",
+      authorUserId: session.userId,
+      body: "Technical public update",
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}/conversation`)
+          && init?.method === "POST") {
+        postCount += 1;
+        if (postCount === 1) {
+          return response({ code: "SERVICE_UNAVAILABLE", correlationId: crypto.randomUUID() }, 503);
+        }
+        return new Promise<Response>((resolve) => {
+          resolveSuccessfulPost = (value) => {
+            conversationItems = [...conversationItems, created];
+            resolve(value);
+          };
+        });
+      }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
+        return response(page(conversationItems, 0, 50));
+      }
+      if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(assignedTicket);
+      if (url.includes("/tickets/technician-queue?")) {
+        return response(page([{ ...listItem, assigneeUserId: session.userId, version: 1 }]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = renderWorkspace();
+    const invalidation = vi.spyOn(queryClient, "invalidateQueries");
+
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    expect(await screen.findByLabelText("Visibilidad: público")).toBeDefined();
+    expect(await screen.findByLabelText("Visibilidad: interno")).toBeDefined();
+    const visibility = screen.getByLabelText("Visibilidad") as HTMLSelectElement;
+    const body = screen.getByLabelText("Comentario técnico") as HTMLTextAreaElement;
+    const submit = screen.getByRole("button", { name: "Añadir a la conversación" });
+    expect(visibility.value).toBe("");
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(visibility, { target: { value: "PUBLIC" } });
+    fireEvent.change(body, { target: { value: "  Technical public update  " } });
+    fireEvent.click(submit);
+    expect((await screen.findByRole("alert")).textContent).toContain("no está disponible");
+    expect(postCount).toBe(1);
+    expect(visibility.value).toBe("PUBLIC");
+    expect(body.value).toBe("  Technical public update  ");
+    expect(screen.queryByText("Technical public update", { selector: "p" })).toBeNull();
+
+    fireEvent.click(submit);
+    await vi.waitFor(() => expect(postCount).toBe(2));
+    expect(screen.queryByText("Technical public update", { selector: "p" })).toBeNull();
+    const post = fetchMock.mock.calls.filter((call) => (
+      String(call[0]).endsWith("/conversation") && call[1]?.method === "POST"
+    )).at(-1);
+    expect(post?.[1]).toMatchObject({
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
+    });
+    expect(JSON.parse(post?.[1]?.body as string)).toEqual({
+      visibility: "PUBLIC",
+      body: "Technical public update",
+    });
+    resolveSuccessfulPost?.(response(created, 201));
+
+    expect(await screen.findByText("Technical public update", { selector: "p" })).toBeDefined();
+    expect(visibility.value).toBe("");
+    expect(body.value).toBe("");
+    expect(invalidation).toHaveBeenCalledWith({
+      queryKey: ["users", session.userId, "support", "technician", "ticket", ticket.ticketId, "conversation"],
+    });
+    expect(fetchMock.mock.calls.filter((call) => (
+      String(call[0]).endsWith("/conversation") && call[1]?.method === "POST"
+    ))).toHaveLength(2);
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
   });

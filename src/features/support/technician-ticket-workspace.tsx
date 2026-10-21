@@ -5,13 +5,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  addTechnicianTicketComment,
   claimTicket,
   getTechnicianTicket,
   listTechnicianQueue,
+  listTechnicianTicketConversation,
   listTechnicianTicketComments,
   TicketContractError,
   type Ticket,
   type TicketComment,
+  type TicketCommentVisibility,
+  type TechnicianTicketComment,
 } from "./api";
 
 const PAGE_SIZES = [10, 20, 50] as const;
@@ -30,6 +34,11 @@ function commentsKey(userId: string, ticketId: string, page: number) {
     "users", userId, "support", "technician", "ticket", ticketId,
     "comments", { page, size: COMMENT_PAGE_SIZE },
   ] as const;
+}
+
+function conversationKey(userId: string, ticketId: string, page?: number) {
+  const base = ["users", userId, "support", "technician", "ticket", ticketId, "conversation"] as const;
+  return page === undefined ? base : [...base, { page, size: COMMENT_PAGE_SIZE }] as const;
 }
 
 function readLocation() {
@@ -57,6 +66,8 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
   const [size, setSize] = useState(initial.size);
   const [selectedTicketId, setSelectedTicketId] = useState("");
   const [commentPage, setCommentPage] = useState(0);
+  const [commentVisibility, setCommentVisibility] = useState<"" | TicketCommentVisibility>("");
+  const [commentBody, setCommentBody] = useState("");
   const canOperate = session.roles.includes("SUPPORT_TECHNICIAN");
 
   const queue = useQuery({
@@ -71,12 +82,21 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
     enabled: canOperate && Boolean(selectedTicketId),
     retry: retryGet,
   });
+  const assignedToCurrentUser = selectedTicket.data?.assigneeUserId === session.userId;
   const comments = useQuery({
     queryKey: commentsKey(session.userId, selectedTicketId, commentPage),
     queryFn: () => listTechnicianTicketComments(
       selectedTicketId, commentPage, COMMENT_PAGE_SIZE, session.userId,
     ),
-    enabled: canOperate && Boolean(selectedTicketId),
+    enabled: canOperate && Boolean(selectedTicketId) && !assignedToCurrentUser,
+    retry: retryGet,
+  });
+  const conversation = useQuery({
+    queryKey: conversationKey(session.userId, selectedTicketId, commentPage),
+    queryFn: () => listTechnicianTicketConversation(
+      selectedTicketId, commentPage, COMMENT_PAGE_SIZE, session.userId,
+    ),
+    enabled: canOperate && Boolean(selectedTicketId) && assignedToCurrentUser,
     retry: retryGet,
   });
   const claim = useMutation({
@@ -91,7 +111,30 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
       ]);
     },
   });
-  const authenticationError = [queue.error, selectedTicket.error, comments.error, claim.error]
+  const addComment = useMutation({
+    mutationFn: ({ ticketId, visibility, body }: {
+      ticketId: string;
+      visibility: TicketCommentVisibility;
+      body: string;
+    }) => (
+      addTechnicianTicketComment(
+        ticketId, visibility, body, session.csrfToken, session.userId,
+      )
+    ),
+    retry: false,
+    onSuccess: async (_, variables) => {
+      await queryClient.invalidateQueries({
+        queryKey: conversationKey(session.userId, variables.ticketId),
+      });
+      if (selectedTicketId === variables.ticketId) {
+        setCommentBody("");
+        setCommentVisibility("");
+      }
+    },
+  });
+  const authenticationError = [
+    queue.error, selectedTicket.error, comments.error, conversation.error, claim.error, addComment.error,
+  ]
     .find((error) => error instanceof ApiError && error.status === 401);
 
   useEffect(() => {
@@ -132,8 +175,18 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
 
   function selectTicket(ticketId: string) {
     claim.reset();
+    addComment.reset();
     setSelectedTicketId(ticketId);
     setCommentPage(0);
+    setCommentVisibility("");
+    setCommentBody("");
+  }
+
+  function submitComment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = commentBody.trim();
+    if (!commentVisibility || !body || body.length > 10_000) return;
+    addComment.mutate({ ticketId: selectedTicketId, visibility: commentVisibility, body });
   }
 
   return (
@@ -143,7 +196,7 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
           <p className="sequence">Support / atención técnica</p>
           <h2 id="technician-ticket-title">Bandeja técnica</h2>
         </div>
-        <p>Tickets no cerrados, sin asignar o bajo tu atención. La conversación es pública y de solo lectura.</p>
+        <p>Revisa la conversación pública antes del claim y atiende la conversación técnica tras asignarte el ticket.</p>
       </header>
 
       <div className="technician-grid">
@@ -210,12 +263,20 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
           {claim.isSuccess && <p className="claim-success" aria-live="polite">Ticket asignado a tu sesión.</p>}
           {selectedTicket.data && (
             <TechnicianConversation
-              comments={comments.data?.items ?? []}
+              comments={(assignedToCurrentUser ? conversation.data?.items : comments.data?.items) ?? []}
               page={commentPage}
-              totalPages={comments.data?.totalPages ?? 0}
-              fetching={comments.isFetching}
-              error={comments.error}
+              totalPages={(assignedToCurrentUser ? conversation.data?.totalPages : comments.data?.totalPages) ?? 0}
+              fetching={assignedToCurrentUser ? conversation.isFetching : comments.isFetching}
+              error={assignedToCurrentUser ? conversation.error : comments.error}
+              assigned={assignedToCurrentUser}
+              visibility={commentVisibility}
+              body={commentBody}
+              pending={addComment.isPending}
+              mutationError={addComment.error}
               onPage={setCommentPage}
+              onVisibility={setCommentVisibility}
+              onBody={setCommentBody}
+              onSubmit={submitComment}
             />
           )}
         </div>
@@ -259,25 +320,46 @@ function TechnicianTicketCard({ ticket, technicianUserId, pending, onClaim }: Re
   );
 }
 
-function TechnicianConversation({ comments, page, totalPages, fetching, error, onPage }: Readonly<{
-  comments: TicketComment[];
+function TechnicianConversation({
+  comments, page, totalPages, fetching, error, assigned, visibility, body, pending,
+  mutationError, onPage, onVisibility, onBody, onSubmit,
+}: Readonly<{
+  comments: Array<TicketComment | TechnicianTicketComment>;
   page: number;
   totalPages: number;
   fetching: boolean;
   error: Error | null;
+  assigned: boolean;
+  visibility: "" | TicketCommentVisibility;
+  body: string;
+  pending: boolean;
+  mutationError: Error | null;
   onPage: (page: number) => void;
+  onVisibility: (visibility: "" | TicketCommentVisibility) => void;
+  onBody: (body: string) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
 }>) {
   return (
     <section className="ticket-conversation" aria-labelledby="technician-conversation-title">
-      <div className="form-heading"><span>02</span><h3 id="technician-conversation-title">Conversación pública</h3></div>
-      <p className="read-only-note">Solo lectura en este incremento.</p>
+      <div className="form-heading"><span>02</span><h3 id="technician-conversation-title">Conversación del ticket</h3></div>
+      <p className="read-only-note">
+        {assigned
+          ? "Los comentarios públicos son visibles para el requester. Las notas internas permanecen en atención técnica."
+          : "Conversación pública de solo lectura hasta que te asignes el ticket."}
+      </p>
       {fetching && <p className="result-status" aria-live="polite">Cargando conversación...</p>}
       {error && <p className="form-error" role="alert">{errorMessage(error, "comments")}</p>}
-      {!fetching && !error && comments.length === 0 && <p className="ticket-empty">Aún no hay comentarios públicos.</p>}
+      {!fetching && !error && comments.length === 0 && <p className="ticket-empty">Aún no hay comentarios.</p>}
       {comments.length > 0 && (
         <ol className="comment-list">
           {comments.map((comment) => (
-            <li key={comment.commentId}>
+            <li key={comment.commentId} className={`comment-${comment.visibility.toLowerCase()}`}>
+              <span
+                className={`comment-visibility comment-visibility-${comment.visibility.toLowerCase()}`}
+                aria-label={`Visibilidad: ${comment.visibility === "PUBLIC" ? "público" : "interno"}`}
+              >
+                {comment.visibility === "PUBLIC" ? "Público" : "Interno"}
+              </span>
               <p>{comment.body}</p>
               <small>Autor {comment.authorUserId}</small>
               <time dateTime={comment.createdAt}>{formatUtc(comment.createdAt)}</time>
@@ -286,12 +368,45 @@ function TechnicianConversation({ comments, page, totalPages, fetching, error, o
         </ol>
       )}
       <Pagination
-        label="Paginación de comentarios públicos"
+        label="Paginación de la conversación técnica"
         page={page}
         totalPages={totalPages}
         pending={fetching}
         onPage={onPage}
       />
+      {assigned && (
+        <form className="comment-form technician-comment-form" onSubmit={onSubmit}>
+          <label htmlFor="technician-comment-visibility">Visibilidad</label>
+          <select
+            id="technician-comment-visibility"
+            value={visibility}
+            required
+            disabled={pending}
+            onChange={(event) => onVisibility(event.target.value as "" | TicketCommentVisibility)}
+          >
+            <option value="">Selecciona una visibilidad</option>
+            <option value="PUBLIC">Público</option>
+            <option value="INTERNAL">Interno</option>
+          </select>
+          <label htmlFor="technician-comment-body">Comentario técnico</label>
+          <textarea
+            id="technician-comment-body"
+            value={body}
+            maxLength={10_000}
+            rows={4}
+            required
+            disabled={pending}
+            onChange={(event) => onBody(event.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={pending || !visibility || !body.trim() || body.trim().length > 10_000}
+          >
+            {pending ? "Enviando..." : "Añadir a la conversación"}
+          </button>
+          {mutationError && <p className="form-error" role="alert">{errorMessage(mutationError, "comment")}</p>}
+        </form>
+      )}
     </section>
   );
 }
@@ -316,13 +431,16 @@ function formatUtc(value: string) {
   return `${new Date(value).toLocaleString("es-ES", { timeZone: "UTC" })} UTC`;
 }
 
-function errorMessage(error: Error | null, action: "queue" | "detail" | "comments" | "claim") {
+function errorMessage(error: Error | null, action: "queue" | "detail" | "comments" | "claim" | "comment") {
   if (error instanceof TicketContractError) return "El servicio devolvió datos de Support con un formato no válido.";
   if (!(error instanceof ApiError)) return "El servicio de Support no está disponible.";
   if (error.status === 403) return "La sesión no autoriza esta operación técnica.";
   if (error.status === 404) return "El ticket ya no está disponible en tu bandeja.";
   if (error.status === 409 && action === "claim") {
     return "Otro técnico cambió o tomó el ticket. Actualiza la bandeja antes de reintentar.";
+  }
+  if (error.status === 409 && action === "comment") {
+    return "El ticket cambió mientras escribías. Conservamos el comentario para que puedas revisar y reintentar.";
   }
   if (error.status === 400 || error.status === 422) return "La solicitud no cumple el contrato esperado.";
   return "El servicio de Support no está disponible.";

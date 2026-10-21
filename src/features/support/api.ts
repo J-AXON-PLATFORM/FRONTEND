@@ -3,6 +3,7 @@ import { ApiError } from "@/features/auth/api";
 export type TicketType = "INCIDENT" | "SERVICE_REQUEST" | "QUESTION" | "OTHER";
 export type TicketStatus = "OPEN" | "IN_PROGRESS" | "WAITING_FOR_REQUESTER" | "RESOLVED" | "CLOSED";
 export type TicketPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
+export type TicketCommentVisibility = "PUBLIC" | "INTERNAL";
 
 export type Ticket = {
   ticketId: string;
@@ -67,6 +68,14 @@ export type TicketCommentPage = {
   size: number;
   totalElements: number;
   totalPages: number;
+};
+
+export type TechnicianTicketComment = Omit<TicketComment, "visibility"> & {
+  visibility: TicketCommentVisibility;
+};
+
+export type TechnicianTicketCommentPage = Omit<TicketCommentPage, "items"> & {
+  items: TechnicianTicketComment[];
 };
 
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
@@ -286,6 +295,45 @@ export async function listTechnicianTicketComments(
   return parseTechnicianCommentPage(value, ticketId, page, size, technicianUserId);
 }
 
+export async function listTechnicianTicketConversation(
+  ticketId: string,
+  page: number,
+  size: number,
+  technicianUserId: string,
+): Promise<TechnicianTicketCommentPage> {
+  const value = await readJson(await fetch(
+    `${apiUrl}/tickets/technician-queue/${encodeURIComponent(ticketId)}/conversation?page=${page}&size=${size}`,
+    { credentials: "include" },
+  ));
+  return parseTechnicianConversationPage(value, ticketId, page, size, technicianUserId);
+}
+
+export async function addTechnicianTicketComment(
+  ticketId: string,
+  visibility: TicketCommentVisibility,
+  body: string,
+  csrfToken: string,
+  technicianUserId: string,
+): Promise<TechnicianTicketComment> {
+  const value = await readJson(await fetch(
+    `${apiUrl}/tickets/technician-queue/${encodeURIComponent(ticketId)}/conversation`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ visibility, body }),
+    },
+  ));
+  const comment = parseTechnicianComment(value, ticketId);
+  if (comment.authorUserId !== technicianUserId || comment.visibility !== visibility) {
+    throw new TicketContractError();
+  }
+  return comment;
+}
+
 export async function claimTicket(
   ticketId: string,
   expectedVersion: number,
@@ -332,13 +380,12 @@ export function parseTicketCommentPage(
   expectedSize: number,
   expectedRequesterUserId: string,
 ): TicketCommentPage {
-  if (!isPage(value, expectedPage, expectedSize, 100)
+  if (!isUuid(expectedRequesterUserId)
+      || !isPage(value, expectedPage, expectedSize, 100)
       || !value.items.every((item) => isRecord(item))) {
     throw new TicketContractError();
   }
-  const items = value.items.map((item) => parseTicketComment(
-    item, expectedTicketId, expectedRequesterUserId,
-  ));
+  const items = value.items.map((item) => parsePublicComment(item, expectedTicketId));
   if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
     throw new TicketContractError();
   }
@@ -447,6 +494,25 @@ function parseTechnicianCommentPage(
   return { ...value, items } as TicketCommentPage;
 }
 
+export function parseTechnicianConversationPage(
+  value: unknown,
+  expectedTicketId: string,
+  expectedPage: number,
+  expectedSize: number,
+  technicianUserId: string,
+): TechnicianTicketCommentPage {
+  if (!isUuid(technicianUserId)
+      || !isPage(value, expectedPage, expectedSize, 100)
+      || !value.items.every((item) => isRecord(item))) {
+    throw new TicketContractError();
+  }
+  const items = value.items.map((item) => parseTechnicianComment(item, expectedTicketId));
+  if (!validPageContents(value, items.length, expectedPage, expectedSize)) {
+    throw new TicketContractError();
+  }
+  return { ...value, items } as TechnicianTicketCommentPage;
+}
+
 function parsePublicComment(value: unknown, expectedTicketId: string): TicketComment {
   if (!isRecord(value)) throw new TicketContractError();
   const expected = new Set([
@@ -463,6 +529,24 @@ function parsePublicComment(value: unknown, expectedTicketId: string): TicketCom
     throw new TicketContractError();
   }
   return value as TicketComment;
+}
+
+function parseTechnicianComment(value: unknown, expectedTicketId: string): TechnicianTicketComment {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "commentId", "ticketId", "visibility", "authorUserId", "body", "createdAt",
+  ]);
+  if (Object.keys(value).length !== expected.size
+      || Object.keys(value).some((key) => !expected.has(key))
+      || !isUuid(value.commentId)
+      || value.ticketId !== expectedTicketId
+      || (value.visibility !== "PUBLIC" && value.visibility !== "INTERNAL")
+      || !isUuid(value.authorUserId)
+      || !isText(value.body, 10_000)
+      || !isUtc(value.createdAt)) {
+    throw new TicketContractError();
+  }
+  return value as TechnicianTicketComment;
 }
 
 function validPageContents(
