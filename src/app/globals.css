@@ -164,6 +164,13 @@ h1 {
 .status-dot { display: flex; align-items: center; gap: 0.6rem; color: var(--muted); font-size: 0.85rem; }
 .status-dot::before { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #27805a; content: ""; }
 
+.session-actions { display: flex; align-items: center; gap: 1rem; }
+.logout-control { position: relative; }
+.logout-control button { border: 1px solid var(--dark); padding: 0.55rem 0.8rem; color: var(--dark); background: transparent; font-weight: 750; cursor: pointer; }
+.logout-control button:hover:not(:disabled) { color: white; background: var(--dark); }
+.logout-control button:disabled { cursor: wait; opacity: 0.6; }
+.header-error { position: absolute; z-index: 1; top: calc(100% + 0.5rem); right: 0; width: min(24rem, 80vw); border-left: 0.25rem solid var(--signal); margin: 0; padding: 0.7rem; color: #751f10; background: #f8ddd4; box-shadow: 0 0.5rem 1rem rgb(21 27 25 / 12%); }
+
 .identity-card {
   width: min(100%, 60rem);
   margin: clamp(5rem, 14vh, 10rem) auto 0;
@@ -182,6 +189,28 @@ h1 {
 }
 
 .ticket-workspace { width: min(100%, 76rem); margin: 5rem auto 0; }
+.administration-workspace { width: min(100%, 76rem); margin: 5rem auto 0; }
+.administration-grid { display: grid; grid-template-columns: minmax(19rem, 0.78fr) minmax(22rem, 1.22fr); gap: clamp(1.25rem, 4vw, 3.5rem); padding: 2rem 0 5rem; }
+.user-form { display: grid; align-self: start; gap: 1.25rem; border-top: 0.45rem solid #247fbb; padding: 1.5rem; background: var(--panel); }
+.user-form > button { min-height: 3.25rem; border: 0; padding: 0.75rem 1rem; color: white; background: var(--signal-dark); font-weight: 800; cursor: pointer; }
+.user-form > button:hover:not(:disabled) { background: var(--dark); }
+.user-form > button:disabled { cursor: wait; opacity: 0.65; }
+.role-selector { display: grid; gap: 0.65rem; border: 0; margin: 0; padding: 0; }
+.role-selector legend { margin-bottom: 0.75rem; font-size: 0.82rem; font-weight: 750; }
+.role-selector label { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 0.65rem; border: 1px solid var(--line); padding: 0.75rem; cursor: pointer; }
+.role-selector input { margin-top: 0.2rem; }
+.role-selector span { display: grid; gap: 0.2rem; font-weight: 700; }
+.role-selector small { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.7rem; }
+.user-result { align-self: start; }
+.administration-empty { border-left: 0.25rem solid #247fbb; margin: 0; padding: 1rem; color: var(--muted); background: var(--panel); }
+.user-card { border: 1px solid var(--line); padding: clamp(1.25rem, 4vw, 2.25rem); background: var(--panel); }
+.user-card-title { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-top: 0.7rem; }
+.user-card-title h3 { margin: 0; font-size: clamp(1.8rem, 5vw, 3.2rem); letter-spacing: -0.05em; overflow-wrap: anywhere; }
+.user-card-title span { border: 1px solid #176341; padding: 0.4rem 0.55rem; color: #176341; font-family: ui-monospace, monospace; font-size: 0.7rem; font-weight: 800; }
+.user-card dl { margin: 1.5rem 0 0; }
+.user-card dl div { display: grid; grid-template-columns: 6rem 1fr; gap: 1rem; border-top: 1px solid var(--line); padding: 0.75rem 0; }
+.user-card dt { color: var(--muted); font-size: 0.78rem; font-weight: 750; text-transform: uppercase; }
+.user-card dd { margin: 0; overflow-wrap: anywhere; }
 .ticket-grid { display: grid; grid-template-columns: minmax(19rem, 0.78fr) minmax(22rem, 1.22fr); gap: clamp(1.25rem, 4vw, 3.5rem); padding: 2rem 0 5rem; }
 .ticket-form { display: grid; align-self: start; gap: 1.25rem; border-top: 0.45rem solid #247fbb; padding: 1.5rem; background: var(--panel); }
 .ticket-form textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 0; padding: 0.75rem 0.9rem; color: var(--ink); background: var(--panel); }
@@ -341,12 +370,15 @@ h1 {
   .workspace-heading { display: grid; }
   .workspace-grid { grid-template-columns: 1fr; }
   .ticket-grid { grid-template-columns: 1fr; }
+  .administration-grid { grid-template-columns: 1fr; }
   .agent-grid { grid-template-columns: 1fr; }
   .lookup-control { grid-template-columns: 1fr; gap: 0.65rem; }
   .asset-card-title { display: grid; }
   .asset-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
   .ticket-card-title { display: grid; }
   .ticket-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
+  .user-card-title { display: grid; }
+  .user-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
   .ticket-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .technical-state-heading { display: grid; }
   .technical-facts { grid-template-columns: 1fr; }

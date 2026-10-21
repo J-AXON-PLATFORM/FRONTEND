@@ -51,4 +51,27 @@ describe("HomePage", () => {
     await vi.waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
     expect(queryClient.getQueryData(["sensitive", "example"])).toBeUndefined();
   });
+
+  it("does not expose administration, inventory, agents, or requester support to support-only sessions", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      userId: "34844482-1d29-4d30-87fd-1bb67a22e050",
+      username: "Support.Only",
+      roles: ["SUPPORT_TECHNICIAN"],
+      csrfToken: "sensitive-session-value-kept-in-memory",
+      expiresAt: "2026-10-21T00:00:00Z",
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <HomePage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Support.Only" })).toBeDefined();
+    expect(screen.queryByRole("heading", { name: "Usuarios humanos" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Activos" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Tickets de soporte" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeDefined();
+  });
 });
