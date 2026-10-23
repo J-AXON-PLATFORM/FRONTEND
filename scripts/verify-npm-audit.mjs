@@ -11,8 +11,8 @@ const expectedVulnerabilities = new Map([
   ["eslint-config-next", { direct: true, via: "@next/eslint-plugin-next" }],
 ]);
 const expectedChain = [
-  ["eslint-config-next", "16.3.8", "@next/eslint-plugin-next", "16.3.8"],
-  ["@next/eslint-plugin-next", "16.3.8", "fast-glob", "3.3.1"],
+  ["eslint-config-next", "16.4.2", "@next/eslint-plugin-next", "16.4.2"],
+  ["@next/eslint-plugin-next", "16.4.2", "fast-glob", "3.3.1"],
   ["fast-glob", "3.3.1", "micromatch", "^4.0.4"],
   ["micromatch", "4.0.8", "braces", "^3.0.3"],
   ["braces", "3.0.3", null, null],

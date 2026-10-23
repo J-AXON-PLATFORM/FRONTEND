@@ -15,7 +15,10 @@ import {
   type Ticket,
   type TicketComment,
   type TicketCommentVisibility,
+  type TicketPriority,
   type TechnicianTicketComment,
+  updateTicketPriority,
+  updateTicketStatus,
 } from "./api";
 
 const PAGE_SIZES = [10, 20, 50] as const;
@@ -111,6 +114,41 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
       ]);
     },
   });
+  const invalidateTicket = async (ticketId: string) => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queueKey(session.userId, page, size), exact: true }),
+      queryClient.invalidateQueries({ queryKey: ticketKey(session.userId, ticketId), exact: true }),
+    ]);
+  };
+  const changePriority = useMutation({
+    mutationFn: ({ ticket, priority }: { ticket: Ticket; priority: TicketPriority }) => (
+      updateTicketPriority(
+        ticket.ticketId, ticket.priority, priority, ticket.version, session.csrfToken, session.userId,
+      )
+    ),
+    retry: false,
+    onSuccess: (ticket) => invalidateTicket(ticket.ticketId),
+    onError: (error, variables) => {
+      if (error instanceof ApiError && error.status === 409) {
+        return invalidateTicket(variables.ticket.ticketId);
+      }
+    },
+  });
+  const changeStatus = useMutation({
+    mutationFn: ({ ticket, status }: {
+      ticket: Ticket;
+      status: "IN_PROGRESS" | "WAITING_FOR_REQUESTER";
+    }) => updateTicketStatus(
+      ticket.ticketId, ticket.status, status, ticket.version, session.csrfToken, session.userId,
+    ),
+    retry: false,
+    onSuccess: (ticket) => invalidateTicket(ticket.ticketId),
+    onError: (error, variables) => {
+      if (error instanceof ApiError && error.status === 409) {
+        return invalidateTicket(variables.ticket.ticketId);
+      }
+    },
+  });
   const addComment = useMutation({
     mutationFn: ({ ticketId, visibility, body }: {
       ticketId: string;
@@ -134,6 +172,7 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
   });
   const authenticationError = [
     queue.error, selectedTicket.error, comments.error, conversation.error, claim.error, addComment.error,
+    changePriority.error, changeStatus.error,
   ]
     .find((error) => error instanceof ApiError && error.status === 401);
 
@@ -176,6 +215,8 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
   function selectTicket(ticketId: string) {
     claim.reset();
     addComment.reset();
+    changePriority.reset();
+    changeStatus.reset();
     setSelectedTicketId(ticketId);
     setCommentPage(0);
     setCommentVisibility("");
@@ -257,6 +298,16 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
               technicianUserId={session.userId}
               pending={claim.isPending}
               onClaim={() => claim.mutate(selectedTicket.data)}
+              mutationPending={changePriority.isPending || changeStatus.isPending}
+              mutationError={changePriority.error ?? changeStatus.error}
+              onPriority={(priority) => {
+                changeStatus.reset();
+                changePriority.mutate({ ticket: selectedTicket.data, priority });
+              }}
+              onStatus={(status) => {
+                changePriority.reset();
+                changeStatus.mutate({ ticket: selectedTicket.data, status });
+              }}
             />
           )}
           {claim.isError && <p className="form-error" role="alert">{errorMessage(claim.error, "claim")}</p>}
@@ -285,11 +336,17 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
   );
 }
 
-function TechnicianTicketCard({ ticket, technicianUserId, pending, onClaim }: Readonly<{
+function TechnicianTicketCard({
+  ticket, technicianUserId, pending, onClaim, mutationPending, mutationError, onPriority, onStatus,
+}: Readonly<{
   ticket: Ticket;
   technicianUserId: string;
   pending: boolean;
   onClaim: () => void;
+  mutationPending: boolean;
+  mutationError: Error | null;
+  onPriority: (priority: TicketPriority) => void;
+  onStatus: (status: "IN_PROGRESS" | "WAITING_FOR_REQUESTER") => void;
 }>) {
   const assignedToCurrentUser = ticket.assigneeUserId === technicianUserId;
   return (
@@ -316,6 +373,38 @@ function TechnicianTicketCard({ ticket, technicianUserId, pending, onClaim }: Re
       >
         {pending ? "Asignando..." : assignedToCurrentUser ? "Ya está asignado a ti" : "Asignarme ticket"}
       </button>
+      {assignedToCurrentUser && (
+        <div className="ticket-triage" aria-label="Triaje operativo del ticket">
+          <label htmlFor="ticket-priority">Prioridad</label>
+          <select
+            id="ticket-priority"
+            value={ticket.priority}
+            disabled={mutationPending}
+            onChange={(event) => onPriority(event.target.value as TicketPriority)}
+          >
+            <option value="LOW">Baja</option>
+            <option value="NORMAL">Normal</option>
+            <option value="HIGH">Alta</option>
+            <option value="URGENT">Urgente</option>
+          </select>
+          {ticket.status === "OPEN" && (
+            <button type="button" disabled={mutationPending} onClick={() => onStatus("IN_PROGRESS")}>
+              Iniciar atención
+            </button>
+          )}
+          {ticket.status === "IN_PROGRESS" && (
+            <button type="button" disabled={mutationPending} onClick={() => onStatus("WAITING_FOR_REQUESTER")}>
+              Esperar respuesta del requester
+            </button>
+          )}
+          {ticket.status === "WAITING_FOR_REQUESTER" && (
+            <button type="button" disabled={mutationPending} onClick={() => onStatus("IN_PROGRESS")}>
+              Reanudar atención
+            </button>
+          )}
+          {mutationError && <p className="form-error" role="alert">{errorMessage(mutationError, "triage")}</p>}
+        </div>
+      )}
     </article>
   );
 }
@@ -431,7 +520,10 @@ function formatUtc(value: string) {
   return `${new Date(value).toLocaleString("es-ES", { timeZone: "UTC" })} UTC`;
 }
 
-function errorMessage(error: Error | null, action: "queue" | "detail" | "comments" | "claim" | "comment") {
+function errorMessage(
+  error: Error | null,
+  action: "queue" | "detail" | "comments" | "claim" | "comment" | "triage",
+) {
   if (error instanceof TicketContractError) return "El servicio devolvió datos de Support con un formato no válido.";
   if (!(error instanceof ApiError)) return "El servicio de Support no está disponible.";
   if (error.status === 403) return "La sesión no autoriza esta operación técnica.";
@@ -441,6 +533,9 @@ function errorMessage(error: Error | null, action: "queue" | "detail" | "comment
   }
   if (error.status === 409 && action === "comment") {
     return "El ticket cambió mientras escribías. Conservamos el comentario para que puedas revisar y reintentar.";
+  }
+  if (error.status === 409 && action === "triage") {
+    return "El ticket cambió o la transición ya no es válida. El detalle se actualizó antes de reintentar.";
   }
   if (error.status === 400 || error.status === 422) return "La solicitud no cumple el contrato esperado.";
   return "El servicio de Support no está disponible.";

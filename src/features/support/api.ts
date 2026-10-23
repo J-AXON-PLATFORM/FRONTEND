@@ -356,6 +356,62 @@ export async function claimTicket(
   return ticket;
 }
 
+export async function updateTicketPriority(
+  ticketId: string,
+  currentPriority: TicketPriority,
+  priority: TicketPriority,
+  expectedVersion: number,
+  csrfToken: string,
+  technicianUserId: string,
+): Promise<Ticket> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}/priority`, {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ priority, expectedVersion }),
+  }));
+  const ticket = parseTechnicianTicket(value, technicianUserId);
+  const expectedResponseVersion = expectedVersion + Number(priority !== currentPriority);
+  if (ticket.ticketId !== ticketId
+      || ticket.assigneeUserId !== technicianUserId
+      || ticket.priority !== priority
+      || ticket.version !== expectedResponseVersion) {
+    throw new TicketContractError();
+  }
+  return ticket;
+}
+
+export async function updateTicketStatus(
+  ticketId: string,
+  currentStatus: TicketStatus,
+  status: "OPEN" | "IN_PROGRESS" | "WAITING_FOR_REQUESTER",
+  expectedVersion: number,
+  csrfToken: string,
+  technicianUserId: string,
+): Promise<Ticket> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}/status`, {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ status, expectedVersion }),
+  }));
+  const ticket = parseTechnicianTicket(value, technicianUserId);
+  const expectedResponseVersion = expectedVersion + Number(status !== currentStatus);
+  if (ticket.ticketId !== ticketId
+      || ticket.assigneeUserId !== technicianUserId
+      || ticket.status !== status
+      || ticket.version !== expectedResponseVersion) {
+    throw new TicketContractError();
+  }
+  return ticket;
+}
+
 export function parseTicketPage(
   value: unknown,
   expectedPage: number,

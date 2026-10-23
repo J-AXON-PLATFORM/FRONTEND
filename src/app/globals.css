@@ -212,6 +212,13 @@ h1 {
 .claim-button { width: 100%; min-height: 3.25rem; border: 0; padding: 0.75rem 1rem; color: white; background: #285f51; font-weight: 800; cursor: pointer; }
 .claim-button:hover:not(:disabled) { background: var(--dark); }
 .claim-button:disabled { cursor: not-allowed; opacity: 0.6; }
+.ticket-triage { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(12rem, 1.4fr); gap: 0.75rem; border-top: 1px solid var(--line); margin-top: 1.25rem; padding-top: 1.25rem; }
+.ticket-triage label { align-self: end; color: var(--muted); font-size: 0.78rem; font-weight: 750; text-transform: uppercase; }
+.ticket-triage select { min-height: 3rem; border: 1px solid var(--line); padding: 0.6rem 0.8rem; color: var(--ink); background: var(--panel); }
+.ticket-triage button { grid-column: 1 / -1; min-height: 3rem; border: 1px solid #285f51; padding: 0.7rem 1rem; color: #18483b; background: #dcebe4; font-weight: 800; cursor: pointer; }
+.ticket-triage button:hover:not(:disabled) { color: white; background: #285f51; }
+.ticket-triage :disabled { cursor: wait; opacity: 0.6; }
+.ticket-triage .form-error { grid-column: 1 / -1; }
 .claim-success { border-left: 0.25rem solid #285f51; margin: 0; padding: 0.8rem 1rem; color: #18483b; background: #dcebe4; }
 .read-only-note { margin: 0; color: var(--muted); font-size: 0.82rem; }
 .comment-list small { display: block; margin-bottom: 0.25rem; overflow-wrap: anywhere; color: var(--muted); font-size: 0.72rem; }
@@ -411,6 +418,7 @@ h1 {
   .ticket-card-title { display: grid; }
   .ticket-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
   .technician-ticket-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
+  .ticket-triage { grid-template-columns: 1fr; }
   .user-card-title { display: grid; }
   .user-card dl div { grid-template-columns: 1fr; gap: 0.25rem; }
   .ticket-pagination { align-items: stretch; flex-direction: column; text-align: center; }

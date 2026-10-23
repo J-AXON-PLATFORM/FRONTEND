@@ -217,6 +217,45 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(technicianTicketCard).toContainText("Asignado a ti");
   await expect(technicianTicketCard).toContainText("Versión1");
 
+  const priorityResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}/priority`)
+      && response.request().method() === "PUT"
+  ));
+  await page.getByLabel("Prioridad", { exact: true }).selectOption("URGENT");
+  expect((await priorityResponse).status()).toBe(200);
+  await expect(technicianTicketCard).toContainText("URGENT");
+  await expect(technicianTicketCard).toContainText("Versión2");
+
+  const changeStatus = async (button: string, expectedStatus: string, expectedVersion: number) => {
+    const statusResponse = page.waitForResponse((response) => (
+      response.url().endsWith(`/api/v1/tickets/${ticketId}/status`)
+        && response.request().method() === "PUT"
+    ));
+    await page.getByRole("button", { name: button }).click();
+    expect((await statusResponse).status()).toBe(200);
+    await expect(technicianTicketCard).toContainText(expectedStatus);
+    await expect(technicianTicketCard).toContainText(`Versión${expectedVersion}`);
+  };
+  await changeStatus("Iniciar atención", "IN_PROGRESS", 3);
+  await changeStatus("Esperar respuesta del requester", "WAITING_FOR_REQUESTER", 4);
+  await changeStatus("Reanudar atención", "IN_PROGRESS", 5);
+
+  const technicianSession = await page.evaluate(async (api) => {
+    const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
+    return response.json();
+  }, backendUrl!);
+  const staleNoOp = await page.evaluate(async ({ api, id, csrf }) => {
+    const response = await fetch(`${api}/api/v1/tickets/${id}/status`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ status: "IN_PROGRESS", expectedVersion: 4 }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { api: backendUrl!, id: ticketId, csrf: technicianSession.csrfToken as string });
+  expect(staleNoOp.status).toBe(409);
+  expect(staleNoOp.body.code).toBe("TICKET_MUTATION_CONFLICT");
+
   const internalNote = "E2E internal diagnosis: replace the pickup roller.";
   const technicianPublicComment = "E2E technician public update: repair scheduled.";
   const visibility = page.getByLabel("Visibilidad", { exact: true });
@@ -272,7 +311,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
     "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
     "--command", `SELECT
-      (t.assignee_user_id = u.id)::text || ':' || t.version || ':' || t.status || ':' ||
+      (t.assignee_user_id = u.id)::text || ':' || t.version || ':' || t.status || ':' || t.priority || ':' ||
       (SELECT count(*) FROM support.outbox_events e
        WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id) || ':' ||
       (SELECT bool_and(e.actor_id = u.id AND e.resource_version = 1)
@@ -280,12 +319,16 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
        WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id) || ':' ||
       (SELECT bool_and(e.payload = jsonb_build_object('assigneeUserId', u.id::text))
        FROM support.outbox_events e
-       WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id)
-      FROM support.tickets t
+       WHERE e.event_type = 'TICKET_ASSIGNED' AND e.resource_id = t.id) || ':' ||
+       (SELECT count(*) FROM support.outbox_events e
+        WHERE e.event_type = 'TICKET_PRIORITY_CHANGED' AND e.resource_id = t.id) || ':' ||
+       (SELECT count(*) FROM support.outbox_events e
+        WHERE e.event_type = 'TICKET_STATUS_CHANGED' AND e.resource_id = t.id)
+       FROM support.tickets t
       JOIN identity.human_users u ON u.normalized_username = '${supportUsername}'
       WHERE t.id = '${ticketId}'`,
   ], { encoding: "utf8" }).trim();
-  expect(persistedClaim).toBe("true:1:OPEN:1:true:true");
+  expect(persistedClaim).toBe("true:5:IN_PROGRESS:URGENT:1:true:true:1:3");
 
   const technicianLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
@@ -312,6 +355,22 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page.getByText(technicianPublicComment)).toBeVisible();
   await expect(page.getByText(internalNote)).not.toBeVisible();
   expect(await page.locator("body").textContent()).not.toContain(internalNote);
+
+  const requesterSession = await page.evaluate(async (api) => {
+    const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
+    return response.json();
+  }, backendUrl!);
+  const forbiddenTriage = await page.evaluate(async ({ api, id, csrf }) => {
+    const response = await fetch(`${api}/api/v1/tickets/${id}/priority`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ priority: "LOW", expectedVersion: 5 }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { api: backendUrl!, id: ticketId, csrf: requesterSession.csrfToken as string });
+  expect(forbiddenTriage.status).toBe(403);
+  expect(forbiddenTriage.body.code).toBe("ACCESS_DENIED");
 
   await page.getByLabel("UUID del activo").fill(assetId);
   await page.getByRole("button", { name: "Consultar", exact: true }).click();

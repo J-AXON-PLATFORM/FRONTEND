@@ -2,7 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "@/features/auth/api";
-import { parseTechnicianConversationPage, TicketContractError } from "./api";
+import {
+  parseTechnicianConversationPage,
+  TicketContractError,
+  updateTicketPriority,
+  updateTicketStatus,
+} from "./api";
 import { TechnicianTicketWorkspace } from "./technician-ticket-workspace";
 
 const replace = vi.fn();
@@ -292,6 +297,138 @@ describe("TechnicianTicketWorkspace", () => {
     ))).toHaveLength(2);
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
+  });
+
+  it("changes priority and the non-terminal lifecycle without retry or optimistic state", async () => {
+    let currentTicket = { ...ticket, assigneeUserId: session.userId, version: 1 };
+    let resolvePriority: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/tickets/${ticket.ticketId}/priority`) && init?.method === "PUT") {
+        return new Promise<Response>((resolve) => {
+          resolvePriority = (value) => resolve(value);
+        });
+      }
+      if (url.endsWith(`/tickets/${ticket.ticketId}/status`) && init?.method === "PUT") {
+        currentTicket = {
+          ...currentTicket,
+          status: "IN_PROGRESS",
+          updatedAt: "2026-10-21T20:02:00Z",
+          version: 3,
+        };
+        return response(currentTicket);
+      }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
+        return response(page([], 0, 50));
+      }
+      if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(currentTicket);
+      if (url.includes("/tickets/technician-queue?")) {
+        const currentListItem = { ...listItem, ...currentTicket } as Partial<typeof currentTicket>;
+        delete currentListItem.description;
+        return response(page([currentListItem]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    const priority = await screen.findByLabelText("Prioridad") as HTMLSelectElement;
+    expect(priority.value).toBe("NORMAL");
+    fireEvent.change(priority, { target: { value: "HIGH" } });
+    expect(priority.value).toBe("NORMAL");
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(
+      (call) => String(call[0]).endsWith("/priority"),
+    )).toBe(true));
+    const priorityPut = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/priority"));
+    expect(priorityPut?.[1]).toMatchObject({
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
+    });
+    expect(JSON.parse(priorityPut?.[1]?.body as string)).toEqual({ priority: "HIGH", expectedVersion: 1 });
+
+    currentTicket = {
+      ...currentTicket,
+      priority: "HIGH",
+      updatedAt: "2026-10-21T20:01:00Z",
+      version: 2,
+    };
+    resolvePriority?.(response(currentTicket));
+    await vi.waitFor(() => expect(priority.value).toBe("HIGH"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar atención" }));
+    await vi.waitFor(() => expect(screen.getByText("IN_PROGRESS")).toBeDefined());
+    const statusPut = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/status"));
+    expect(JSON.parse(statusPut?.[1]?.body as string)).toEqual({ status: "IN_PROGRESS", expectedVersion: 2 });
+    expect(screen.getByRole("button", { name: "Esperar respuesta del requester" })).toBeDefined();
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/priority"))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/status"))).toHaveLength(1);
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("enforces ticket identity and exact effective or no-op response versions", async () => {
+    const assignedTicket = { ...ticket, assigneeUserId: session.userId, priority: "HIGH", version: 2 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ...assignedTicket, ticketId: "55783c94-caee-445f-a157-18bb2dfcaf36" }))
+      .mockResolvedValueOnce(response({ ...assignedTicket, ticketId: ticket.ticketId, version: 1 }))
+      .mockResolvedValueOnce(response({ ...assignedTicket, priority: "NORMAL", version: 1 }))
+      .mockResolvedValueOnce(response({ ...assignedTicket, priority: "NORMAL", status: "OPEN", version: 1 }))
+      .mockResolvedValueOnce(response({ ...assignedTicket, priority: "NORMAL", version: 2 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(updateTicketPriority(
+      ticket.ticketId, "NORMAL", "HIGH", 1, session.csrfToken, session.userId,
+    )).rejects.toBeInstanceOf(TicketContractError);
+    await expect(updateTicketPriority(
+      ticket.ticketId, "NORMAL", "HIGH", 1, session.csrfToken, session.userId,
+    )).rejects.toBeInstanceOf(TicketContractError);
+    await expect(updateTicketPriority(
+      ticket.ticketId, "NORMAL", "NORMAL", 1, session.csrfToken, session.userId,
+    )).resolves.toMatchObject({ priority: "NORMAL", version: 1 });
+    await expect(updateTicketStatus(
+      ticket.ticketId, "OPEN", "OPEN", 1, session.csrfToken, session.userId,
+    )).resolves.toMatchObject({ status: "OPEN", version: 1 });
+    await expect(updateTicketPriority(
+      ticket.ticketId, "NORMAL", "NORMAL", 1, session.csrfToken, session.userId,
+    )).rejects.toBeInstanceOf(TicketContractError);
+  });
+
+  it("refetches the ticket and queue after a stale triage conflict", async () => {
+    let currentTicket = { ...ticket, assigneeUserId: session.userId, version: 1 };
+    let detailRequests = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/tickets/${ticket.ticketId}/priority`) && init?.method === "PUT") {
+        currentTicket = { ...currentTicket, priority: "HIGH", version: 2 };
+        return response({ code: "TICKET_MUTATION_CONFLICT", correlationId: crypto.randomUUID() }, 409);
+      }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
+        return response(page([], 0, 50));
+      }
+      if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) {
+        detailRequests += 1;
+        return response(currentTicket);
+      }
+      if (url.includes("/tickets/technician-queue?")) {
+        const currentListItem = { ...listItem, ...currentTicket } as Partial<typeof currentTicket>;
+        delete currentListItem.description;
+        return response(page([currentListItem]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    fireEvent.change(await screen.findByLabelText("Prioridad"), { target: { value: "HIGH" } });
+
+    expect((await screen.findByRole("alert")).textContent).toContain("El detalle se actualizó");
+    await vi.waitFor(() => expect(detailRequests).toBeGreaterThanOrEqual(2));
+    expect((screen.getByLabelText("Prioridad") as HTMLSelectElement).value).toBe("HIGH");
+    expect(screen.getByText("2", { selector: "dd" })).toBeDefined();
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/priority"))).toHaveLength(1);
   });
 
   it("fails closed for a ticket assigned to another technician", async () => {
