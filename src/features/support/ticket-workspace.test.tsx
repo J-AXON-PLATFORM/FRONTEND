@@ -55,6 +55,18 @@ const comment = {
   body: "The printer is available again.",
   createdAt: "2026-10-19T19:00:00Z",
 };
+const lifecycleEntry = {
+  lifecycleEventId: "1bb1540d-ea58-4ce0-b8a4-510f84a389f2",
+  eventType: "RESOLVED",
+  fromStatus: "IN_PROGRESS",
+  toStatus: "RESOLVED",
+  resolutionSummary: "Restarted the print service.",
+  closeReason: null,
+  reopenReason: null,
+  actorUserId: "34844482-1d29-4d30-87fd-1bb67a22e050",
+  occurredAt: "2026-10-19T20:00:00Z",
+  resourceVersion: 2,
+};
 
 afterEach(() => {
   cleanup();
@@ -73,6 +85,7 @@ function response(value: unknown, status = 200) {
 function mockApi(ticketItems: unknown[] = [], commentItems: unknown[] = []) {
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    if (url.includes(`/tickets/${ticket.ticketId}/lifecycle?`)) return response(page([], 50));
     if (url.includes(`/tickets/${ticket.ticketId}/comments`) && init?.method === "POST") {
       return response(comment, 201);
     }
@@ -302,6 +315,45 @@ describe("TicketWorkspace", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
     expect(screen.queryByText("Technician-only diagnosis.")).toBeNull();
+  });
+
+  it("shows the public lifecycle and reopens without optimistic state", async () => {
+    let currentTicket = { ...ticket, status: "CLOSED", assigneeUserId: lifecycleEntry.actorUserId, version: 3 };
+    let resolveReopen: ((value: Response) => void) | undefined;
+    const reopened = { ...currentTicket, status: "OPEN", version: 4, updatedAt: "2026-10-19T21:00:00Z" };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/tickets/${ticket.ticketId}/reopen`) && init?.method === "POST") {
+        return new Promise<Response>((resolve) => { resolveReopen = resolve; });
+      }
+      if (url.includes(`/tickets/${ticket.ticketId}/lifecycle?`)) return response(page([lifecycleEntry], 50));
+      if (url.includes(`/tickets/${ticket.ticketId}/comments?`)) return response(page([], 50));
+      if (url.endsWith(`/tickets/${ticket.ticketId}`)) return response(currentTicket);
+      if (url.includes("/tickets?page=")) return response(page([{ ...ticketListItem, status: currentTicket.status, assigneeUserId: currentTicket.assigneeUserId, version: currentTicket.version }], 20));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    expect(await screen.findByText(lifecycleEntry.resolutionSummary)).toBeDefined();
+    expect(screen.queryByLabelText("Añadir comentario público")).toBeNull();
+    const reason = screen.getByLabelText("Motivo de reapertura");
+    fireEvent.change(reason, { target: { value: "  The fault returned.  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Reabrir ticket" }));
+    expect(screen.getByText("CLOSED")).toBeDefined();
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(
+      (call) => String(call[0]).endsWith("/reopen"),
+    )).toBe(true));
+    const post = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/reopen"));
+    expect(JSON.parse(post?.[1]?.body as string)).toEqual({ reopenReason: "The fault returned.", expectedVersion: 3 });
+    currentTicket = reopened;
+    resolveReopen?.(response(reopened));
+
+    expect(await screen.findByText("OPEN")).toBeDefined();
+    expect(await screen.findByLabelText("Añadir comentario público")).toBeDefined();
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
   });
 
   it("does not expose Support operations without IT_OPERATOR", () => {

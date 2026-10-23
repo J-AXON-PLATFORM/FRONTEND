@@ -9,16 +9,20 @@ import {
   createTicket,
   getTicket,
   listTicketComments,
+  listTicketLifecycle,
   listTickets,
+  reopenTicket,
   TicketContractError,
   type Ticket,
   type TicketComment,
+  type TicketLifecycleEntry,
   type TicketType,
 } from "./api";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TICKET_PAGE_SIZE = 20;
 const COMMENT_PAGE_SIZE = 50;
+const LIFECYCLE_PAGE_SIZE = 50;
 const TICKET_TYPES: { value: TicketType; label: string }[] = [
   { value: "INCIDENT", label: "Incidente" },
   { value: "SERVICE_REQUEST", label: "Solicitud de servicio" },
@@ -41,6 +45,11 @@ function commentKey(userId: string, ticketId: string, page: number) {
   ] as const;
 }
 
+function lifecycleKey(userId: string, ticketId: string, page?: number) {
+  const base = ["users", userId, "support", "ticket", ticketId, "lifecycle"] as const;
+  return page === undefined ? base : [...base, { page, size: LIFECYCLE_PAGE_SIZE }] as const;
+}
+
 function retryGet(count: number, error: Error) {
   return !(error instanceof ApiError && error.status < 500)
     && !(error instanceof TicketContractError)
@@ -60,6 +69,8 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
   const [ticketPage, setTicketPage] = useState(0);
   const [commentPage, setCommentPage] = useState(0);
   const [commentBody, setCommentBody] = useState("");
+  const [lifecyclePage, setLifecyclePage] = useState(0);
+  const [reopenReason, setReopenReason] = useState("");
   const canOperate = session.roles.includes("IT_OPERATOR");
 
   const tickets = useQuery({
@@ -78,6 +89,14 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
     queryKey: commentKey(session.userId, selectedTicketId, commentPage),
     queryFn: () => listTicketComments(
       selectedTicketId, commentPage, COMMENT_PAGE_SIZE, session.userId,
+    ),
+    enabled: canOperate && UUID_V4.test(selectedTicketId),
+    retry: retryGet,
+  });
+  const lifecycle = useQuery({
+    queryKey: lifecycleKey(session.userId, selectedTicketId, lifecyclePage),
+    queryFn: () => listTicketLifecycle(
+      selectedTicketId, lifecyclePage, LIFECYCLE_PAGE_SIZE, session.userId,
     ),
     enabled: canOperate && UUID_V4.test(selectedTicketId),
     retry: retryGet,
@@ -125,8 +144,28 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
       }
     },
   });
+  const reopen = useMutation({
+    mutationFn: (ticket: Ticket) => reopenTicket(
+      ticket.ticketId, reopenReason.trim(), ticket.version, session.csrfToken, session.userId, false,
+    ),
+    retry: false,
+    onSuccess: async (ticket) => {
+      setReopenReason("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ticketKey(session.userId, ticket.ticketId), exact: true }),
+        queryClient.invalidateQueries({ queryKey: lifecycleKey(session.userId, ticket.ticketId) }),
+        queryClient.invalidateQueries({ queryKey: ["users", session.userId, "support", "tickets"] }),
+      ]);
+    },
+    onError: (error, ticket) => {
+      if (error instanceof ApiError && error.status === 409) {
+        return queryClient.invalidateQueries({ queryKey: ticketKey(session.userId, ticket.ticketId), exact: true });
+      }
+    },
+  });
   const authenticationError = [
-    tickets.error, selectedTicket.error, comments.error, creation.error, commentCreation.error,
+    tickets.error, selectedTicket.error, comments.error, lifecycle.error, creation.error,
+    commentCreation.error, reopen.error,
   ].find((error) => error instanceof ApiError && error.status === 401);
 
   useEffect(() => {
@@ -142,7 +181,9 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
     commentCreation.reset();
     setSelectedTicketId(ticketId);
     setCommentPage(0);
+    setLifecyclePage(0);
     setCommentBody("");
+    setReopenReason("");
   }
 
   function submitCreation(event: FormEvent<HTMLFormElement>) {
@@ -279,7 +320,41 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
               onBody={setCommentBody}
               onPage={setCommentPage}
               onSubmit={submitComment}
+              closed={selectedTicket.data.status === "CLOSED"}
             />
+          )}
+          {selectedTicket.data && (
+            <LifecycleTimeline
+              entries={lifecycle.data?.items ?? []}
+              page={lifecyclePage}
+              totalPages={lifecycle.data?.totalPages ?? 0}
+              fetching={lifecycle.isFetching}
+              error={lifecycle.error}
+              onPage={setLifecyclePage}
+            />
+          )}
+          {selectedTicket.data
+            && (selectedTicket.data.status === "RESOLVED" || selectedTicket.data.status === "CLOSED") && (
+            <form className="lifecycle-form" onSubmit={(event) => {
+              event.preventDefault();
+              if (reopenReason.trim()) reopen.mutate(selectedTicket.data);
+            }}>
+              <div className="form-heading"><span>06</span><h3>Reabrir ticket</h3></div>
+              <label htmlFor={`reopen-${selectedTicket.data.ticketId}`}>Motivo de reapertura</label>
+              <textarea
+                id={`reopen-${selectedTicket.data.ticketId}`}
+                required
+                maxLength={2000}
+                rows={4}
+                value={reopenReason}
+                disabled={reopen.isPending}
+                onChange={(event) => setReopenReason(event.target.value)}
+              />
+              {reopen.isError && <p className="form-error" role="alert">{errorMessage(reopen.error, "reabrir")}</p>}
+              <button type="submit" disabled={reopen.isPending || !reopenReason.trim()}>
+                {reopen.isPending ? "Reabriendo..." : "Reabrir ticket"}
+              </button>
+            </form>
           )}
         </div>
       </div>
@@ -289,7 +364,7 @@ export function TicketWorkspace({ session }: Readonly<{ session: Session }>) {
 
 function Conversation({
   ticketId, comments, page, totalPages, body, pending, fetching, commentsError, commentError,
-  onBody, onPage, onSubmit,
+  onBody, onPage, onSubmit, closed,
 }: Readonly<{
   ticketId: string;
   comments: TicketComment[];
@@ -303,6 +378,7 @@ function Conversation({
   onBody: (body: string) => void;
   onPage: (page: number) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  closed: boolean;
 }>) {
   return (
     <section className="ticket-conversation" aria-labelledby={`conversation-${ticketId}`}>
@@ -328,12 +404,51 @@ function Conversation({
         pending={fetching}
         onPage={onPage}
       />
-      <form className="comment-form" onSubmit={onSubmit}>
-        <label htmlFor={`comment-${ticketId}`}>Añadir comentario público</label>
-        <textarea id={`comment-${ticketId}`} required maxLength={10000} rows={4} value={body} disabled={pending} onChange={(event) => onBody(event.target.value)} />
-        <button type="submit" disabled={pending || !body.trim()}>{pending ? "Publicando..." : "Publicar comentario"}</button>
-      </form>
+      {closed
+        ? <p className="read-only-note">El ticket está cerrado. Reábrelo para continuar la conversación.</p>
+        : (
+          <form className="comment-form" onSubmit={onSubmit}>
+            <label htmlFor={`comment-${ticketId}`}>Añadir comentario público</label>
+            <textarea id={`comment-${ticketId}`} required maxLength={10000} rows={4} value={body} disabled={pending} onChange={(event) => onBody(event.target.value)} />
+            <button type="submit" disabled={pending || !body.trim()}>{pending ? "Publicando..." : "Publicar comentario"}</button>
+          </form>
+        )}
     </section>
+  );
+}
+
+function LifecycleTimeline({ entries, page, totalPages, fetching, error, onPage }: Readonly<{
+  entries: TicketLifecycleEntry[];
+  page: number;
+  totalPages: number;
+  fetching: boolean;
+  error: Error | null;
+  onPage: (page: number) => void;
+}>) {
+  return (
+    <section className="lifecycle-timeline" aria-labelledby="requester-lifecycle-title">
+      <div className="form-heading"><span>05</span><h3 id="requester-lifecycle-title">Historial del ciclo de vida</h3></div>
+      {fetching && <p className="result-status" aria-live="polite">Cargando historial...</p>}
+      {error && <p className="form-error" role="alert">{errorMessage(error, "consultar")}</p>}
+      {!fetching && !error && entries.length === 0 && <p className="ticket-empty">Aún no hay eventos terminales.</p>}
+      <ol className="lifecycle-list">
+        {entries.map((entry) => <LifecycleItem key={entry.lifecycleEventId} entry={entry} />)}
+      </ol>
+      <Pagination label="Paginación del historial" page={page} totalPages={totalPages} pending={fetching} onPage={onPage} />
+    </section>
+  );
+}
+
+function LifecycleItem({ entry }: Readonly<{ entry: TicketLifecycleEntry }>) {
+  const detail = entry.resolutionSummary ?? entry.reopenReason
+    ?? (entry.closeReason ? `Motivo: ${entry.closeReason.replaceAll("_", " ")}` : "");
+  return (
+    <li>
+      <strong>{entry.eventType}</strong>
+      <span>{entry.fromStatus} → {entry.toStatus}</span>
+      {detail && <p>{detail}</p>}
+      <time dateTime={entry.occurredAt}>{formatUtc(entry.occurredAt)}</time>
+    </li>
   );
 }
 
@@ -378,7 +493,7 @@ function formatUtc(value: string) {
   return `${new Date(value).toLocaleString("es-ES", { timeZone: "UTC" })} UTC`;
 }
 
-function errorMessage(error: Error | null, action: "crear" | "consultar" | "listar" | "comentar") {
+function errorMessage(error: Error | null, action: "crear" | "consultar" | "listar" | "comentar" | "reabrir") {
   if (error instanceof TicketContractError) {
     return "El servicio devolvió datos de Support con un formato no válido.";
   }
@@ -390,6 +505,9 @@ function errorMessage(error: Error | null, action: "crear" | "consultar" | "list
     return action === "crear"
       ? "No existe el activo asociado indicado."
       : "No existe un ticket propio con ese identificador.";
+  }
+  if (error.status === 409 && action === "reabrir") {
+    return "El ticket cambió o ya no puede reabrirse. El detalle se actualizó; revisa antes de reintentar.";
   }
   if (error.status === 400 || error.status === 422) return "Revisa los datos e inténtalo de nuevo.";
   return `No fue posible ${action} tickets. El servicio no está disponible.`;

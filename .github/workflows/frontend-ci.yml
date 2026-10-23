@@ -2,16 +2,22 @@ name: Frontend CI
 
 on:
   pull_request:
-    branches:
-      - develop
-      - main
+    branches: [develop, main]
   push:
-    branches:
-      - develop
+    branches: [develop]
   workflow_dispatch:
+    inputs:
+      risk_level:
+        description: Verification level
+        type: choice
+        required: true
+        default: PLATFORM_FULL
+        options: [PLATFORM_FULL, APPLICATION, DOCS_ONLY]
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: frontend-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,17 +27,79 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
-  frontend-verification:
-    name: Frontend verification
+  classify:
+    name: Classify CI risk
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-
+    timeout-minutes: 5
+    outputs:
+      level: ${{ steps.classify.outputs.level }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify classifier
+        run: ./scripts/ci/test-classify-changes.sh
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_LEVEL: ${{ inputs.risk_level }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed_paths="${RUNNER_TEMP}/changed-paths.txt"
+          case "${GITHUB_EVENT_NAME}" in
+            workflow_dispatch)
+              printf 'level=%s\n' "${DISPATCH_LEVEL:-PLATFORM_FULL}" >> "${GITHUB_OUTPUT}"
+              exit 0
+              ;;
+            pull_request)
+              git diff --name-only "${PR_BASE_SHA}" "${PR_HEAD_SHA}" > "${changed_paths}"
+              ;;
+            push)
+              mapfile -t pr_numbers < <(gh api --paginate \
+                "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls?per_page=100" \
+                --jq '.[] | select(.merged_at != null and .base.ref == "develop") | .number')
+              if (( ${#pr_numbers[@]} != 1 )); then
+                printf 'level=PLATFORM_FULL\n' >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              pr_number="${pr_numbers[0]}"
+              merge_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '.merge_commit_sha')"
+              if [[ "${merge_sha}" != "${GITHUB_SHA}" ]]; then
+                printf 'level=PLATFORM_FULL\n' >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+                --jq '.[].filename' > "${changed_paths}"
+              ;;
+            *)
+              printf 'level=PLATFORM_FULL\n' >> "${GITHUB_OUTPUT}"
+              exit 0
+              ;;
+          esac
+          ./scripts/ci/classify-changes.sh "${changed_paths}"
+
+  frontend-verification:
+    name: Frontend verification
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI_LEVEL: ${{ needs.classify.outputs.level }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check patch whitespace
+        run: git diff --check HEAD^ HEAD
 
       - name: Scan Git history for secrets
         env:
@@ -48,6 +116,7 @@ jobs:
           "${RUNNER_TEMP}/gitleaks" git --redact=100 --verbose .
 
       - name: Set up Node.js
+        if: env.CI_LEVEL != 'DOCS_ONLY'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
@@ -55,40 +124,45 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
+        if: env.CI_LEVEL != 'DOCS_ONLY'
         run: npm ci
 
       - name: Lint
+        if: env.CI_LEVEL != 'DOCS_ONLY'
         run: npm run lint
 
       - name: Typecheck
+        if: env.CI_LEVEL != 'DOCS_ONLY'
         run: npm run typecheck
 
       - name: Test
+        if: env.CI_LEVEL != 'DOCS_ONLY'
         run: npm run test
 
       - name: Build
+        if: env.CI_LEVEL != 'DOCS_ONLY'
         run: npm run build
 
       - name: Audit production dependencies
+        if: env.CI_LEVEL == 'PLATFORM_FULL'
         run: npm run audit:production
 
       - name: Audit all dependencies
+        if: env.CI_LEVEL == 'PLATFORM_FULL'
         run: npm run audit:dependencies
 
       - name: Build frontend container
-        run: >-
-          docker build
-          --build-arg VCS_REF=${{ github.sha }}
-          --tag jaxon-frontend:ci
-          .
+        if: env.CI_LEVEL == 'PLATFORM_FULL'
+        run: docker build --build-arg VCS_REF=${{ github.sha }} --tag jaxon-frontend:ci .
 
       - name: Verify frontend container
+        if: env.CI_LEVEL == 'PLATFORM_FULL'
         run: ./scripts/verify-container.sh jaxon-frontend:ci
 
       - name: Scan frontend container
+        if: env.CI_LEVEL == 'PLATFORM_FULL'
         run: >-
-          docker run --rm
-          --volume /var/run/docker.sock:/var/run/docker.sock
+          docker run --rm --volume /var/run/docker.sock:/var/run/docker.sock
           aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
           image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln --no-progress
           jaxon-frontend:ci
