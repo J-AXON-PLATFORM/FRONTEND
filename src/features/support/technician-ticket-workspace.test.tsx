@@ -3,7 +3,11 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "@/features/auth/api";
 import {
+  closeTicket,
+  parseTicketLifecyclePage,
   parseTechnicianConversationPage,
+  reopenTicket,
+  resolveTicket,
   TicketContractError,
   updateTicketPriority,
   updateTicketStatus,
@@ -59,6 +63,18 @@ const comment = {
   authorUserId: requesterId,
   body: "Requester supplied a public update.",
   createdAt: "2026-10-21T19:00:00Z",
+};
+const lifecycleEntry = {
+  lifecycleEventId: "1bb1540d-ea58-4ce0-b8a4-510f84a389f2",
+  eventType: "RESOLVED",
+  fromStatus: "IN_PROGRESS",
+  toStatus: "RESOLVED",
+  resolutionSummary: "Restarted the print service.",
+  closeReason: null,
+  reopenReason: null,
+  actorUserId: session.userId,
+  occurredAt: "2026-10-21T20:10:00Z",
+  resourceVersion: 3,
 };
 
 afterEach(() => {
@@ -137,6 +153,7 @@ describe("TechnicianTicketWorkspace", () => {
       if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
         return response(page([comment], 0, 50));
       }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/lifecycle?`)) return response(page([], 0, 50));
       if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/comments?`)) return response(page([comment], 0, 50));
       if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(claimed ? claimedTicket : ticket);
       if (url.includes("/tickets/technician-queue?")) {
@@ -241,6 +258,7 @@ describe("TechnicianTicketWorkspace", () => {
       if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
         return response(page(conversationItems, 0, 50));
       }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/lifecycle?`)) return response(page([], 0, 50));
       if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(assignedTicket);
       if (url.includes("/tickets/technician-queue?")) {
         return response(page([{ ...listItem, assigneeUserId: session.userId, version: 1 }]));
@@ -321,6 +339,7 @@ describe("TechnicianTicketWorkspace", () => {
       if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
         return response(page([], 0, 50));
       }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/lifecycle?`)) return response(page([], 0, 50));
       if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(currentTicket);
       if (url.includes("/tickets/technician-queue?")) {
         const currentListItem = { ...listItem, ...currentTicket } as Partial<typeof currentTicket>;
@@ -407,6 +426,7 @@ describe("TechnicianTicketWorkspace", () => {
       if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) {
         return response(page([], 0, 50));
       }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/lifecycle?`)) return response(page([], 0, 50));
       if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) {
         detailRequests += 1;
         return response(currentTicket);
@@ -441,6 +461,78 @@ describe("TechnicianTicketWorkspace", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("formato no válido");
     expect(screen.queryByText(ticket.summary)).toBeNull();
+  });
+
+  it("validates lifecycle ordering and exact terminal mutation responses", async () => {
+    expect(parseTicketLifecyclePage(page([lifecycleEntry], 0, 50), 0, 50).items).toEqual([lifecycleEntry]);
+    expect(() => parseTicketLifecyclePage(page([{ ...lifecycleEntry, leaked: true }], 0, 50), 0, 50))
+      .toThrow(TicketContractError);
+    expect(() => parseTicketLifecyclePage(page([
+      lifecycleEntry,
+      { ...lifecycleEntry, lifecycleEventId: "0bb1540d-ea58-4ce0-b8a4-510f84a389f2" },
+    ], 0, 50), 0, 50)).toThrow(TicketContractError);
+
+    const assigned = { ...ticket, assigneeUserId: session.userId, status: "IN_PROGRESS", version: 2 };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(response({ ...assigned, status: "RESOLVED", version: 3 }))
+      .mockResolvedValueOnce(response({ ...assigned, status: "CLOSED", version: 3 }))
+      .mockResolvedValueOnce(response({ ...assigned, status: "OPEN", version: 3 }))
+      .mockResolvedValueOnce(response({ ...assigned, status: "RESOLVED", version: 2 })));
+    await expect(resolveTicket(ticket.ticketId, "Restored", 2, session.csrfToken, session.userId))
+      .resolves.toMatchObject({ status: "RESOLVED", version: 3 });
+    await expect(closeTicket(ticket.ticketId, "CANCELLED", 2, session.csrfToken, session.userId))
+      .resolves.toMatchObject({ status: "CLOSED", version: 3 });
+    await expect(reopenTicket(ticket.ticketId, "Returned", 2, session.csrfToken, session.userId, true))
+      .resolves.toMatchObject({ status: "OPEN", version: 3 });
+    await expect(resolveTicket(ticket.ticketId, "Restored", 2, session.csrfToken, session.userId))
+      .rejects.toBeInstanceOf(TicketContractError);
+  });
+
+  it("resolves from the technical form without retry or optimistic state", async () => {
+    let currentTicket = {
+      ...ticket,
+      assigneeUserId: session.userId,
+      status: "IN_PROGRESS",
+      version: 2,
+    };
+    let resolveMutation: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/tickets/${ticket.ticketId}/resolve`) && init?.method === "POST") {
+        return new Promise<Response>((resolve) => { resolveMutation = resolve; });
+      }
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/conversation?`)) return response(page([], 0, 50));
+      if (url.includes(`/tickets/technician-queue/${ticket.ticketId}/lifecycle?`)) return response(page([], 0, 50));
+      if (url.endsWith(`/tickets/technician-queue/${ticket.ticketId}`)) return response(currentTicket);
+      if (url.includes("/tickets/technician-queue?")) {
+        const item = { ...listItem, ...currentTicket } as Partial<typeof currentTicket>;
+        delete item.description;
+        return response(page([item]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Printer unavailable/ }));
+    const summary = await screen.findByLabelText("Resumen de resolución");
+    fireEvent.change(summary, { target: { value: "  Restarted and verified printing.  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
+    expect(screen.getByText("IN_PROGRESS")).toBeDefined();
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(
+      (call) => String(call[0]).endsWith("/resolve"),
+    )).toBe(true));
+    const post = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/resolve"));
+    expect(JSON.parse(post?.[1]?.body as string)).toEqual({
+      resolutionSummary: "Restarted and verified printing.",
+      expectedVersion: 2,
+    });
+    currentTicket = { ...currentTicket, status: "RESOLVED", version: 3 };
+    resolveMutation?.(response(currentTicket));
+
+    expect(await screen.findByText("RESOLVED")).toBeDefined();
+    expect((screen.getByLabelText("Motivo de reapertura") as HTMLTextAreaElement).value).toBe("");
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/resolve"))).toHaveLength(1);
   });
 
   it("does not render or fetch without SUPPORT_TECHNICIAN", () => {

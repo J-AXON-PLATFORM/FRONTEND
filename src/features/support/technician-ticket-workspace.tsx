@@ -7,14 +7,20 @@ import { useEffect, useState } from "react";
 import {
   addTechnicianTicketComment,
   claimTicket,
+  closeTicket,
   getTechnicianTicket,
   listTechnicianQueue,
   listTechnicianTicketConversation,
   listTechnicianTicketComments,
+  listTechnicianTicketLifecycle,
+  reopenTicket,
+  resolveTicket,
   TicketContractError,
   type Ticket,
   type TicketComment,
   type TicketCommentVisibility,
+  type TicketCloseReason,
+  type TicketLifecycleEntry,
   type TicketPriority,
   type TechnicianTicketComment,
   updateTicketPriority,
@@ -23,6 +29,7 @@ import {
 
 const PAGE_SIZES = [10, 20, 50] as const;
 const COMMENT_PAGE_SIZE = 50;
+const LIFECYCLE_PAGE_SIZE = 50;
 
 function queueKey(userId: string, page: number, size: number) {
   return ["users", userId, "support", "technician", "tickets", { page, size }] as const;
@@ -42,6 +49,11 @@ function commentsKey(userId: string, ticketId: string, page: number) {
 function conversationKey(userId: string, ticketId: string, page?: number) {
   const base = ["users", userId, "support", "technician", "ticket", ticketId, "conversation"] as const;
   return page === undefined ? base : [...base, { page, size: COMMENT_PAGE_SIZE }] as const;
+}
+
+function lifecycleKey(userId: string, ticketId: string, page?: number) {
+  const base = ["users", userId, "support", "technician", "ticket", ticketId, "lifecycle"] as const;
+  return page === undefined ? base : [...base, { page, size: LIFECYCLE_PAGE_SIZE }] as const;
 }
 
 function readLocation() {
@@ -71,6 +83,10 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
   const [commentPage, setCommentPage] = useState(0);
   const [commentVisibility, setCommentVisibility] = useState<"" | TicketCommentVisibility>("");
   const [commentBody, setCommentBody] = useState("");
+  const [lifecyclePage, setLifecyclePage] = useState(0);
+  const [resolutionSummary, setResolutionSummary] = useState("");
+  const [closeReason, setCloseReason] = useState<TicketCloseReason>("CANCELLED");
+  const [reopenReason, setReopenReason] = useState("");
   const canOperate = session.roles.includes("SUPPORT_TECHNICIAN");
 
   const queue = useQuery({
@@ -102,6 +118,14 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
     enabled: canOperate && Boolean(selectedTicketId) && assignedToCurrentUser,
     retry: retryGet,
   });
+  const lifecycle = useQuery({
+    queryKey: lifecycleKey(session.userId, selectedTicketId, lifecyclePage),
+    queryFn: () => listTechnicianTicketLifecycle(
+      selectedTicketId, lifecyclePage, LIFECYCLE_PAGE_SIZE, session.userId,
+    ),
+    enabled: canOperate && Boolean(selectedTicketId) && assignedToCurrentUser,
+    retry: retryGet,
+  });
   const claim = useMutation({
     mutationFn: (ticket: Ticket) => claimTicket(
       ticket.ticketId, ticket.version, session.csrfToken, session.userId,
@@ -118,6 +142,7 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queueKey(session.userId, page, size), exact: true }),
       queryClient.invalidateQueries({ queryKey: ticketKey(session.userId, ticketId), exact: true }),
+      queryClient.invalidateQueries({ queryKey: lifecycleKey(session.userId, ticketId) }),
     ]);
   };
   const changePriority = useMutation({
@@ -149,6 +174,46 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
       }
     },
   });
+  const resolve = useMutation({
+    mutationFn: (ticket: Ticket) => resolveTicket(
+      ticket.ticketId, resolutionSummary.trim(), ticket.version, session.csrfToken, session.userId,
+    ),
+    retry: false,
+    onSuccess: async (ticket) => {
+      setResolutionSummary("");
+      await invalidateTicket(ticket.ticketId);
+    },
+    onError: refreshTerminalConflict,
+  });
+  const close = useMutation({
+    mutationFn: (ticket: Ticket) => closeTicket(
+      ticket.ticketId,
+      ticket.status === "RESOLVED" ? "RESOLVED" : closeReason,
+      ticket.version,
+      session.csrfToken,
+      session.userId,
+    ),
+    retry: false,
+    onSuccess: async (ticket) => {
+      setCloseReason("CANCELLED");
+      await invalidateTicket(ticket.ticketId);
+    },
+    onError: refreshTerminalConflict,
+  });
+  const reopen = useMutation({
+    mutationFn: (ticket: Ticket) => reopenTicket(
+      ticket.ticketId, reopenReason.trim(), ticket.version, session.csrfToken, session.userId, true,
+    ),
+    retry: false,
+    onSuccess: async (ticket) => {
+      setReopenReason("");
+      await invalidateTicket(ticket.ticketId);
+    },
+    onError: refreshTerminalConflict,
+  });
+  function refreshTerminalConflict(error: Error, ticket: Ticket) {
+    if (error instanceof ApiError && error.status === 409) return invalidateTicket(ticket.ticketId);
+  }
   const addComment = useMutation({
     mutationFn: ({ ticketId, visibility, body }: {
       ticketId: string;
@@ -172,7 +237,7 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
   });
   const authenticationError = [
     queue.error, selectedTicket.error, comments.error, conversation.error, claim.error, addComment.error,
-    changePriority.error, changeStatus.error,
+    changePriority.error, changeStatus.error, lifecycle.error, resolve.error, close.error, reopen.error,
   ]
     .find((error) => error instanceof ApiError && error.status === 401);
 
@@ -217,10 +282,17 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
     addComment.reset();
     changePriority.reset();
     changeStatus.reset();
+    resolve.reset();
+    close.reset();
+    reopen.reset();
     setSelectedTicketId(ticketId);
     setCommentPage(0);
+    setLifecyclePage(0);
     setCommentVisibility("");
     setCommentBody("");
+    setResolutionSummary("");
+    setCloseReason("CANCELLED");
+    setReopenReason("");
   }
 
   function submitComment(event: React.FormEvent<HTMLFormElement>) {
@@ -308,6 +380,17 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
                 changePriority.reset();
                 changeStatus.mutate({ ticket: selectedTicket.data, status });
               }}
+              terminalPending={resolve.isPending || close.isPending || reopen.isPending}
+              terminalError={resolve.error ?? close.error ?? reopen.error}
+              resolutionSummary={resolutionSummary}
+              closeReason={closeReason}
+              reopenReason={reopenReason}
+              onResolutionSummary={setResolutionSummary}
+              onCloseReason={setCloseReason}
+              onReopenReason={setReopenReason}
+              onResolve={() => resolve.mutate(selectedTicket.data)}
+              onClose={() => close.mutate(selectedTicket.data)}
+              onReopen={() => reopen.mutate(selectedTicket.data)}
             />
           )}
           {claim.isError && <p className="form-error" role="alert">{errorMessage(claim.error, "claim")}</p>}
@@ -324,10 +407,21 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
               body={commentBody}
               pending={addComment.isPending}
               mutationError={addComment.error}
+              closed={selectedTicket.data.status === "CLOSED"}
               onPage={setCommentPage}
               onVisibility={setCommentVisibility}
               onBody={setCommentBody}
               onSubmit={submitComment}
+            />
+          )}
+          {selectedTicket.data && assignedToCurrentUser && (
+            <LifecycleTimeline
+              entries={lifecycle.data?.items ?? []}
+              page={lifecyclePage}
+              totalPages={lifecycle.data?.totalPages ?? 0}
+              fetching={lifecycle.isFetching}
+              error={lifecycle.error}
+              onPage={setLifecyclePage}
             />
           )}
         </div>
@@ -338,6 +432,8 @@ export function TechnicianTicketWorkspace({ session }: Readonly<{ session: Sessi
 
 function TechnicianTicketCard({
   ticket, technicianUserId, pending, onClaim, mutationPending, mutationError, onPriority, onStatus,
+  terminalPending, terminalError, resolutionSummary, closeReason, reopenReason,
+  onResolutionSummary, onCloseReason, onReopenReason, onResolve, onClose, onReopen,
 }: Readonly<{
   ticket: Ticket;
   technicianUserId: string;
@@ -347,6 +443,17 @@ function TechnicianTicketCard({
   mutationError: Error | null;
   onPriority: (priority: TicketPriority) => void;
   onStatus: (status: "IN_PROGRESS" | "WAITING_FOR_REQUESTER") => void;
+  terminalPending: boolean;
+  terminalError: Error | null;
+  resolutionSummary: string;
+  closeReason: TicketCloseReason;
+  reopenReason: string;
+  onResolutionSummary: (value: string) => void;
+  onCloseReason: (value: TicketCloseReason) => void;
+  onReopenReason: (value: string) => void;
+  onResolve: () => void;
+  onClose: () => void;
+  onReopen: () => void;
 }>) {
   const assignedToCurrentUser = ticket.assigneeUserId === technicianUserId;
   return (
@@ -405,13 +512,48 @@ function TechnicianTicketCard({
           {mutationError && <p className="form-error" role="alert">{errorMessage(mutationError, "triage")}</p>}
         </div>
       )}
+      {assignedToCurrentUser && (ticket.status === "IN_PROGRESS" || ticket.status === "WAITING_FOR_REQUESTER") && (
+        <form className="lifecycle-form" onSubmit={(event) => { event.preventDefault(); onResolve(); }}>
+          <h4>Resolver ticket</h4>
+          <label htmlFor={`resolution-${ticket.ticketId}`}>Resumen de resolución</label>
+          <textarea id={`resolution-${ticket.ticketId}`} required maxLength={10000} rows={4} value={resolutionSummary} disabled={terminalPending} onChange={(event) => onResolutionSummary(event.target.value)} />
+          <button type="submit" disabled={terminalPending || !resolutionSummary.trim()}>{terminalPending ? "Confirmando..." : "Resolver"}</button>
+        </form>
+      )}
+      {assignedToCurrentUser && ticket.status !== "CLOSED" && (
+        <form className="lifecycle-form" onSubmit={(event) => { event.preventDefault(); onClose(); }}>
+          <h4>Cerrar ticket</h4>
+          {ticket.status === "RESOLVED"
+            ? <p className="read-only-note">El cierre conservará el motivo RESOLVED.</p>
+            : (
+              <label>
+                Motivo de cierre
+                <select value={closeReason} disabled={terminalPending} onChange={(event) => onCloseReason(event.target.value as TicketCloseReason)}>
+                  <option value="CANCELLED">Cancelado</option>
+                  <option value="DUPLICATE">Duplicado</option>
+                  <option value="NOT_APPLICABLE">No aplicable</option>
+                </select>
+              </label>
+            )}
+          <button type="submit" disabled={terminalPending}>{terminalPending ? "Confirmando..." : "Cerrar"}</button>
+        </form>
+      )}
+      {assignedToCurrentUser && (ticket.status === "RESOLVED" || ticket.status === "CLOSED") && (
+        <form className="lifecycle-form" onSubmit={(event) => { event.preventDefault(); onReopen(); }}>
+          <h4>Reabrir ticket</h4>
+          <label htmlFor={`technician-reopen-${ticket.ticketId}`}>Motivo de reapertura</label>
+          <textarea id={`technician-reopen-${ticket.ticketId}`} required maxLength={2000} rows={4} value={reopenReason} disabled={terminalPending} onChange={(event) => onReopenReason(event.target.value)} />
+          <button type="submit" disabled={terminalPending || !reopenReason.trim()}>{terminalPending ? "Confirmando..." : "Reabrir"}</button>
+        </form>
+      )}
+      {terminalError && <p className="form-error" role="alert">{errorMessage(terminalError, "terminal")}</p>}
     </article>
   );
 }
 
 function TechnicianConversation({
   comments, page, totalPages, fetching, error, assigned, visibility, body, pending,
-  mutationError, onPage, onVisibility, onBody, onSubmit,
+  mutationError, onPage, onVisibility, onBody, onSubmit, closed,
 }: Readonly<{
   comments: Array<TicketComment | TechnicianTicketComment>;
   page: number;
@@ -427,6 +569,7 @@ function TechnicianConversation({
   onVisibility: (visibility: "" | TicketCommentVisibility) => void;
   onBody: (body: string) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  closed: boolean;
 }>) {
   return (
     <section className="ticket-conversation" aria-labelledby="technician-conversation-title">
@@ -463,7 +606,7 @@ function TechnicianConversation({
         pending={fetching}
         onPage={onPage}
       />
-      {assigned && (
+      {assigned && !closed && (
         <form className="comment-form technician-comment-form" onSubmit={onSubmit}>
           <label htmlFor="technician-comment-visibility">Visibilidad</label>
           <select
@@ -496,6 +639,37 @@ function TechnicianConversation({
           {mutationError && <p className="form-error" role="alert">{errorMessage(mutationError, "comment")}</p>}
         </form>
       )}
+      {assigned && closed && <p className="read-only-note">El ticket está cerrado. Reábrelo para continuar la conversación.</p>}
+    </section>
+  );
+}
+
+function LifecycleTimeline({ entries, page, totalPages, fetching, error, onPage }: Readonly<{
+  entries: TicketLifecycleEntry[];
+  page: number;
+  totalPages: number;
+  fetching: boolean;
+  error: Error | null;
+  onPage: (page: number) => void;
+}>) {
+  return (
+    <section className="lifecycle-timeline" aria-labelledby="technician-lifecycle-title">
+      <div className="form-heading"><span>03</span><h3 id="technician-lifecycle-title">Historial terminal</h3></div>
+      {fetching && <p className="result-status" aria-live="polite">Cargando historial...</p>}
+      {error && <p className="form-error" role="alert">{errorMessage(error, "terminal")}</p>}
+      {!fetching && !error && entries.length === 0 && <p className="ticket-empty">Aún no hay eventos terminales.</p>}
+      <ol className="lifecycle-list">
+        {entries.map((entry) => (
+          <li key={entry.lifecycleEventId}>
+            <strong>{entry.eventType}</strong>
+            <span>{entry.fromStatus} → {entry.toStatus}</span>
+            {(entry.resolutionSummary ?? entry.reopenReason) && <p>{entry.resolutionSummary ?? entry.reopenReason}</p>}
+            {entry.closeReason && <p>Motivo: {entry.closeReason.replaceAll("_", " ")}</p>}
+            <time dateTime={entry.occurredAt}>{formatUtc(entry.occurredAt)}</time>
+          </li>
+        ))}
+      </ol>
+      <Pagination label="Paginación del historial terminal" page={page} totalPages={totalPages} pending={fetching} onPage={onPage} />
     </section>
   );
 }
@@ -522,7 +696,7 @@ function formatUtc(value: string) {
 
 function errorMessage(
   error: Error | null,
-  action: "queue" | "detail" | "comments" | "claim" | "comment" | "triage",
+  action: "queue" | "detail" | "comments" | "claim" | "comment" | "triage" | "terminal",
 ) {
   if (error instanceof TicketContractError) return "El servicio devolvió datos de Support con un formato no válido.";
   if (!(error instanceof ApiError)) return "El servicio de Support no está disponible.";
@@ -536,6 +710,9 @@ function errorMessage(
   }
   if (error.status === 409 && action === "triage") {
     return "El ticket cambió o la transición ya no es válida. El detalle se actualizó antes de reintentar.";
+  }
+  if (error.status === 409 && action === "terminal") {
+    return "El ticket cambió o la transición terminal ya no es válida. El detalle se actualizó antes de reintentar.";
   }
   if (error.status === 400 || error.status === 422) return "La solicitud no cumple el contrato esperado.";
   return "El servicio de Support no está disponible.";

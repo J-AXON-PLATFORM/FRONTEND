@@ -78,6 +78,26 @@ export type TechnicianTicketCommentPage = Omit<TicketCommentPage, "items"> & {
   items: TechnicianTicketComment[];
 };
 
+export type TicketLifecycleEventType = "RESOLVED" | "CLOSED" | "REOPENED";
+export type TicketCloseReason = "RESOLVED" | "CANCELLED" | "DUPLICATE" | "NOT_APPLICABLE";
+
+export type TicketLifecycleEntry = {
+  lifecycleEventId: string;
+  eventType: TicketLifecycleEventType;
+  fromStatus: TicketStatus;
+  toStatus: "OPEN" | "RESOLVED" | "CLOSED";
+  resolutionSummary: string | null;
+  closeReason: TicketCloseReason | null;
+  reopenReason: string | null;
+  actorUserId: string;
+  occurredAt: string;
+  resourceVersion: number;
+};
+
+export type TicketLifecyclePage = Omit<TicketCommentPage, "items"> & {
+  items: TicketLifecycleEntry[];
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UTC_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
@@ -412,6 +432,106 @@ export async function updateTicketStatus(
   return ticket;
 }
 
+export async function resolveTicket(
+  ticketId: string,
+  resolutionSummary: string,
+  expectedVersion: number,
+  csrfToken: string,
+  technicianUserId: string,
+): Promise<Ticket> {
+  return terminalMutation(
+    ticketId, "resolve", { resolutionSummary, expectedVersion }, "RESOLVED",
+    expectedVersion, csrfToken, technicianUserId,
+  );
+}
+
+export async function closeTicket(
+  ticketId: string,
+  closeReason: TicketCloseReason,
+  expectedVersion: number,
+  csrfToken: string,
+  technicianUserId: string,
+): Promise<Ticket> {
+  return terminalMutation(
+    ticketId, "close", { closeReason, expectedVersion }, "CLOSED",
+    expectedVersion, csrfToken, technicianUserId,
+  );
+}
+
+export async function reopenTicket(
+  ticketId: string,
+  reopenReason: string,
+  expectedVersion: number,
+  csrfToken: string,
+  actorUserId: string,
+  technician: boolean,
+): Promise<Ticket> {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}/reopen`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ reopenReason, expectedVersion }),
+  }));
+  const ticket = technician ? parseTechnicianTicket(value, actorUserId) : parseTicket(value, actorUserId);
+  if (ticket.ticketId !== ticketId || ticket.status !== "OPEN" || ticket.version !== expectedVersion + 1) {
+    throw new TicketContractError();
+  }
+  return ticket;
+}
+
+async function terminalMutation(
+  ticketId: string,
+  operation: "resolve" | "close",
+  body: { expectedVersion: number; resolutionSummary?: string; closeReason?: TicketCloseReason },
+  expectedStatus: "RESOLVED" | "CLOSED",
+  expectedVersion: number,
+  csrfToken: string,
+  technicianUserId: string,
+) {
+  const value = await readJson(await fetch(`${apiUrl}/tickets/${encodeURIComponent(ticketId)}/${operation}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(body),
+  }));
+  const ticket = parseTechnicianTicket(value, technicianUserId);
+  if (ticket.ticketId !== ticketId
+      || ticket.assigneeUserId !== technicianUserId
+      || ticket.status !== expectedStatus
+      || ticket.version !== expectedVersion + 1) {
+    throw new TicketContractError();
+  }
+  return ticket;
+}
+
+export async function listTicketLifecycle(
+  ticketId: string,
+  page: number,
+  size: number,
+  requesterUserId: string,
+): Promise<TicketLifecyclePage> {
+  if (!isUuid(requesterUserId)) throw new TicketContractError();
+  const value = await readJson(await fetch(
+    `${apiUrl}/tickets/${encodeURIComponent(ticketId)}/lifecycle?page=${page}&size=${size}`,
+    { credentials: "include" },
+  ));
+  return parseTicketLifecyclePage(value, page, size);
+}
+
+export async function listTechnicianTicketLifecycle(
+  ticketId: string,
+  page: number,
+  size: number,
+  technicianUserId: string,
+): Promise<TicketLifecyclePage> {
+  if (!isUuid(technicianUserId)) throw new TicketContractError();
+  const value = await readJson(await fetch(
+    `${apiUrl}/tickets/technician-queue/${encodeURIComponent(ticketId)}/lifecycle?page=${page}&size=${size}`,
+    { credentials: "include" },
+  ));
+  return parseTicketLifecyclePage(value, page, size);
+}
+
 export function parseTicketPage(
   value: unknown,
   expectedPage: number,
@@ -467,11 +587,67 @@ export function parseTechnicianTicketPage(
 
 export function parseTechnicianTicket(value: unknown, technicianUserId: string): Ticket {
   const ticket = parseGeneralTicket(value);
-  if (ticket.status === "CLOSED"
-      || (ticket.assigneeUserId !== null && ticket.assigneeUserId !== technicianUserId)) {
+  if ((ticket.assigneeUserId !== null && ticket.assigneeUserId !== technicianUserId)
+      || (ticket.status === "CLOSED" && ticket.assigneeUserId !== technicianUserId)) {
     throw new TicketContractError();
   }
   return ticket;
+}
+
+export function parseTicketLifecyclePage(
+  value: unknown,
+  expectedPage: number,
+  expectedSize: number,
+): TicketLifecyclePage {
+  if (!isPage(value, expectedPage, expectedSize, 100)
+      || !value.items.every((item) => isRecord(item))) {
+    throw new TicketContractError();
+  }
+  const items = value.items.map(parseLifecycleEntry);
+  if (!validPageContents(value, items.length, expectedPage, expectedSize)
+      || items.some((item, index) => index > 0 && compareLifecycle(items[index - 1], item) >= 0)) {
+    throw new TicketContractError();
+  }
+  return { ...value, items } as TicketLifecyclePage;
+}
+
+function parseLifecycleEntry(value: unknown): TicketLifecycleEntry {
+  if (!isRecord(value)) throw new TicketContractError();
+  const expected = new Set([
+    "lifecycleEventId", "eventType", "fromStatus", "toStatus", "resolutionSummary",
+    "closeReason", "reopenReason", "actorUserId", "occurredAt", "resourceVersion",
+  ]);
+  const commonValid = Object.keys(value).length === expected.size
+    && Object.keys(value).every((key) => expected.has(key))
+    && isUuid(value.lifecycleEventId)
+    && isTicketStatus(value.fromStatus)
+    && (value.toStatus === "OPEN" || value.toStatus === "RESOLVED" || value.toStatus === "CLOSED")
+    && isUuid(value.actorUserId)
+    && isUtc(value.occurredAt)
+    && isVersion(value.resourceVersion)
+    && value.resourceVersion > 0;
+  const eventValid = value.eventType === "RESOLVED"
+    ? value.toStatus === "RESOLVED" && isText(value.resolutionSummary, 10_000)
+      && value.closeReason === null && value.reopenReason === null
+    : value.eventType === "CLOSED"
+      ? value.toStatus === "CLOSED" && value.resolutionSummary === null
+        && isCloseReason(value.closeReason) && value.reopenReason === null
+      : value.eventType === "REOPENED"
+        && value.toStatus === "OPEN" && value.resolutionSummary === null
+        && value.closeReason === null && isText(value.reopenReason, 2_000);
+  if (!commonValid || !eventValid) throw new TicketContractError();
+  return value as TicketLifecycleEntry;
+}
+
+function compareLifecycle(left: TicketLifecycleEntry, right: TicketLifecycleEntry) {
+  return left.occurredAt === right.occurredAt
+    ? left.lifecycleEventId.localeCompare(right.lifecycleEventId)
+    : left.occurredAt.localeCompare(right.occurredAt);
+}
+
+function isCloseReason(value: unknown): value is TicketCloseReason {
+  return value === "RESOLVED" || value === "CANCELLED"
+    || value === "DUPLICATE" || value === "NOT_APPLICABLE";
 }
 
 function parseTechnicianListItem(value: unknown, technicianUserId: string): TicketListItem {

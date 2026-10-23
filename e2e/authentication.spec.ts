@@ -330,6 +330,70 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   ], { encoding: "utf8" }).trim();
   expect(persistedClaim).toBe("true:5:IN_PROGRESS:URGENT:1:true:true:1:3");
 
+  const resolutionSummary = "E2E resolution: pickup roller replaced and print test completed.";
+  const resolveResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}/resolve`)
+      && response.request().method() === "POST"
+  ));
+  await page.getByLabel("Resumen de resolución").fill(resolutionSummary);
+  await page.getByRole("button", { name: "Resolver", exact: true }).click();
+  expect((await resolveResponse).status()).toBe(200);
+  await expect(technicianTicketCard).toContainText("RESOLVED");
+  await expect(technicianTicketCard).toContainText("Versión6");
+  await expect(page.locator("section.lifecycle-timeline"))
+    .toContainText(resolutionSummary);
+
+  const closeResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}/close`)
+      && response.request().method() === "POST"
+  ));
+  await page.getByRole("button", { name: "Cerrar", exact: true }).click();
+  expect((await closeResponse).status()).toBe(200);
+  await expect(technicianTicketCard).toContainText("CLOSED");
+  await expect(technicianTicketCard).toContainText("Versión7");
+  await expect(page.getByText("El ticket está cerrado. Reábrelo para continuar la conversación.")).toBeVisible();
+  await expect(page.getByLabel("Comentario técnico")).not.toBeVisible();
+
+  const persistedTerminalLifecycle = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT t.status || ':' || t.version || ':' ||
+      (t.assignee_user_id = u.id)::text || ':' ||
+      (SELECT string_agg(l.event_type || ':' || l.from_status || '>' || l.to_status || ':' ||
+          coalesce(l.close_reason, '-') || ':' || coalesce(l.resolution_summary, '-'),
+          '|' ORDER BY l.resource_version)
+       FROM support.ticket_lifecycle_events l WHERE l.ticket_id = t.id) || ':' ||
+      (SELECT bool_and(
+          e.payload = jsonb_build_object(
+            'lifecycleEventId', l.id::text,
+            'fromStatus', l.from_status,
+            'toStatus', l.to_status
+          )
+          AND NOT e.payload ? 'resolutionSummary' AND NOT e.payload ? 'reopenReason')
+       FROM support.ticket_lifecycle_events l
+       JOIN support.outbox_events e ON e.resource_id = l.ticket_id
+         AND e.resource_version = l.resource_version
+       WHERE l.ticket_id = t.id AND l.event_type = 'RESOLVED') || ':' ||
+      (SELECT bool_and(
+          e.payload = jsonb_build_object(
+            'lifecycleEventId', l.id::text,
+            'fromStatus', l.from_status,
+            'toStatus', l.to_status,
+            'closeReason', l.close_reason
+          )
+          AND NOT e.payload ? 'resolutionSummary' AND NOT e.payload ? 'reopenReason')
+       FROM support.ticket_lifecycle_events l
+       JOIN support.outbox_events e ON e.resource_id = l.ticket_id
+         AND e.resource_version = l.resource_version
+       WHERE l.ticket_id = t.id AND l.event_type = 'CLOSED')
+      FROM support.tickets t
+      JOIN identity.human_users u ON u.normalized_username = '${supportUsername}'
+      WHERE t.id = '${ticketId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedTerminalLifecycle).toBe(
+    `CLOSED:7:true:RESOLVED:IN_PROGRESS>RESOLVED:-:${resolutionSummary}|CLOSED:RESOLVED>CLOSED:RESOLVED:-:true:true`,
+  );
+
   const technicianLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
   ));
@@ -345,16 +409,60 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     response.url().includes(`/api/v1/tickets/${ticketId}/comments?`)
       && response.request().method() === "GET"
   ));
+  const requesterLifecycleResponse = page.waitForResponse((response) => (
+    response.url().includes(`/api/v1/tickets/${ticketId}/lifecycle?`)
+      && response.request().method() === "GET"
+  ));
   await page.getByRole("button", { name: new RegExp(ticketSummary) }).click();
   const requesterConversation = await (await requesterConversationResponse).json() as {
     items: Array<{ visibility: string; body: string }>;
   };
+  expect((await requesterLifecycleResponse).status()).toBe(200);
   expect(requesterConversation.items.map((item) => item.body)).toContain(technicianPublicComment);
   expect(requesterConversation.items.map((item) => item.body)).not.toContain(internalNote);
   expect(requesterConversation.items.every((item) => item.visibility === "PUBLIC")).toBe(true);
   await expect(page.getByText(technicianPublicComment)).toBeVisible();
   await expect(page.getByText(internalNote)).not.toBeVisible();
   expect(await page.locator("body").textContent()).not.toContain(internalNote);
+  await expect(page.getByRole("article", { name: "Consulta del ticket por ID" })).toContainText("CLOSED");
+  await expect(page.locator("section.lifecycle-timeline"))
+    .toContainText(resolutionSummary);
+  await expect(page.getByLabel("Añadir comentario público")).not.toBeVisible();
+
+  const reopenReason = "E2E reopen: printing defect reproduced after requester validation.";
+  const reopenResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/tickets/${ticketId}/reopen`)
+      && response.request().method() === "POST"
+  ));
+  await page.getByLabel("Motivo de reapertura").fill(reopenReason);
+  await page.getByRole("button", { name: "Reabrir ticket" }).click();
+  expect((await reopenResponse).status()).toBe(200);
+  await expect(page.getByRole("article", { name: "Consulta del ticket por ID" })).toContainText("OPEN");
+  await expect(page.locator("section.lifecycle-timeline"))
+    .toContainText(reopenReason);
+  await expect(page.getByLabel("Añadir comentario público")).toBeVisible();
+
+  const persistedReopen = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT t.status || ':' || t.version || ':' ||
+      (t.assignee_user_id = technician.id)::text || ':' ||
+      l.event_type || ':' || l.from_status || '>' || l.to_status || ':' || l.reopen_reason || ':' ||
+      (e.actor_id = t.requester_user_id)::text || ':' ||
+      (e.payload = jsonb_build_object(
+        'lifecycleEventId', l.id::text,
+        'fromStatus', l.from_status,
+        'toStatus', l.to_status
+      ))::text || ':' ||
+      (NOT e.payload ? 'resolutionSummary' AND NOT e.payload ? 'reopenReason')::text
+      FROM support.tickets t
+      JOIN identity.human_users technician ON technician.normalized_username = '${supportUsername}'
+      JOIN support.ticket_lifecycle_events l ON l.ticket_id = t.id AND l.event_type = 'REOPENED'
+      JOIN support.outbox_events e ON e.resource_id = t.id
+        AND e.resource_version = l.resource_version AND e.event_type = 'TICKET_REOPENED'
+      WHERE t.id = '${ticketId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedReopen).toBe(`OPEN:8:true:REOPENED:CLOSED>OPEN:${reopenReason}:true:true:true`);
 
   const requesterSession = await page.evaluate(async (api) => {
     const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
@@ -365,7 +473,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-      body: JSON.stringify({ priority: "LOW", expectedVersion: 5 }),
+      body: JSON.stringify({ priority: "LOW", expectedVersion: 8 }),
     });
     return { status: response.status, body: await response.json() };
   }, { api: backendUrl!, id: ticketId, csrf: requesterSession.csrfToken as string });
