@@ -3,6 +3,7 @@
 import { ApiError, getCurrentSession } from "@/features/auth/api";
 import { LogoutButton } from "@/features/auth/logout-button";
 import { UserAdministration } from "@/features/administration/user-administration";
+import { AuthorizedScopeWorkspace } from "@/features/discovery/authorized-scope-workspace";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
 import { TicketWorkspace } from "@/features/support/ticket-workspace";
 import { TechnicianTicketWorkspace } from "@/features/support/technician-ticket-workspace";
@@ -51,6 +52,8 @@ export default function HomePage() {
         </ul>
       </section>
       {session.data.roles.includes("SYSTEM_ADMIN") && <UserAdministration session={session.data} />}
+      {(session.data.roles.includes("SYSTEM_ADMIN") || session.data.roles.includes("IT_OPERATOR"))
+        && <AuthorizedScopeWorkspace session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <AssetWorkspace session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <TicketWorkspace session={session.data} />}
       {session.data.roles.includes("SUPPORT_TECHNICIAN") && <TechnicianTicketWorkspace session={session.data} />}
