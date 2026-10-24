@@ -45,6 +45,50 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(scopeCard).toContainText("198.51.100.0/24");
   await expect(scopeCard).toContainText("ACTIVE");
 
+  const executorName = `E2E Discovery Executor ${Date.now()}`;
+  const executorWorkspace = page.getByRole("region", { name: "Discovery Executors" });
+  const createExecutorResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/discovery/executors")
+      && response.request().method() === "POST"
+  ));
+  await executorWorkspace.getByLabel("Nombre", { exact: true }).fill(executorName);
+  await executorWorkspace.getByRole("checkbox", { name: new RegExp(scopeName) }).check();
+  await executorWorkspace.getByRole("button", { name: "Pre-registrar executor" }).click();
+  const createdExecutorResponse = await createExecutorResponse;
+  expect(createdExecutorResponse.status()).toBe(201);
+  const createdExecutor = await createdExecutorResponse.json() as {
+    executorId: string;
+    status: string;
+    version: number;
+  };
+  expect(createdExecutor.status).toBe("PENDING");
+  expect(createdExecutor.version).toBe(0);
+
+  const executorStateDir = `${agentStateDir}-discovery-${Date.now()}`;
+  const initializerOutput = execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-discovery-executor",
+    "initialize", "--executor-id", createdExecutor.executorId,
+    "--state-dir", executorStateDir,
+  ], { encoding: "utf8" });
+  expect(initializerOutput).not.toContain("OPENSSH PRIVATE KEY");
+  const initializedExecutor = JSON.parse(initializerOutput) as {
+    executorId: string;
+    publicKey: string;
+    publicKeyFingerprint: string;
+  };
+  expect(initializedExecutor.executorId).toBe(createdExecutor.executorId);
+  await expect(executorWorkspace.getByText(new RegExp(`jaxon-discovery-executor initialize --executor-id ${createdExecutor.executorId}`)))
+    .toBeVisible();
+
+  const registerExecutorKeyResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/discovery/executors/${createdExecutor.executorId}/ssh-key`)
+      && response.request().method() === "PUT"
+  ));
+  await executorWorkspace.getByLabel("Clave pública Ed25519").fill(initializedExecutor.publicKey);
+  await executorWorkspace.getByRole("button", { name: "Registrar clave pública" }).click();
+  expect((await registerExecutorKeyResponse).status()).toBe(200);
+  await expect(executorWorkspace.getByText(initializedExecutor.publicKeyFingerprint)).toBeVisible();
+
   const disableScopeResponse = page.waitForResponse((response) => (
     response.url().endsWith(`/api/v1/discovery/scopes/${createdScope.scopeId}/status`)
       && response.request().method() === "PUT"
@@ -52,6 +96,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await scopeCard.getByRole("button", { name: `Deshabilitar ${scopeName}` }).click();
   expect((await disableScopeResponse).status()).toBe(200);
   await expect(scopeCard).toContainText("DISABLED");
+  await expect(executorWorkspace.getByText(createdScope.scopeId)).toBeVisible();
   const persistedScope = execFileSync("docker", [
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
     "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
@@ -68,6 +113,27 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       FROM discovery.authorized_scopes s WHERE s.id = '${createdScope.scopeId}'`,
   ], { encoding: "utf8" }).trim();
   expect(persistedScope).toBe("DISABLED:1:1:1");
+  const persistedExecutor = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT x.status || ':' || x.version || ':' ||
+      (SELECT count(*) FROM discovery.discovery_executor_scopes a
+       WHERE a.executor_id = x.id AND a.scope_id = '${createdScope.scopeId}') || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = x.id AND e.event_type = 'DISCOVERY_EXECUTOR_PRE_REGISTERED'
+         AND e.resource_version = 0 AND e.payload = '{"status":"PENDING"}'::jsonb) || ':' ||
+      (SELECT count(*) FROM identity.technical_identities i
+       WHERE i.discovery_executor_id = x.id AND i.agent_id IS NULL
+         AND i.identity_type = 'DISCOVERY_EXECUTOR'
+         AND i.public_key_fingerprint = '${initializedExecutor.publicKeyFingerprint}') || ':' ||
+      (SELECT count(*) FROM identity.outbox_events e
+       WHERE e.resource_id = x.id
+         AND e.event_type = 'DISCOVERY_EXECUTOR_PUBLIC_KEY_REGISTERED'
+         AND e.resource_type = 'DISCOVERY_EXECUTOR_TECHNICAL_IDENTITY'
+         AND e.payload = '{}'::jsonb)
+      FROM discovery.discovery_executors x WHERE x.id = '${createdExecutor.executorId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedExecutor).toBe("PENDING:0:1:1:1:1");
 
   const supportUsername = `support.only.${Date.now()}`;
   const supportPassword = `Support-${crypto.randomUUID()}-Aa9!`;
@@ -125,7 +191,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
 
   const assetName = `E2E Workstation ${Date.now()}`;
   const createResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/assets") && response.request().method() === "POST");
-  await page.getByLabel("Nombre", { exact: true }).fill(assetName);
+  await page.getByRole("region", { name: "Activos" }).getByLabel("Nombre", { exact: true }).fill(assetName);
   await page.getByLabel("Tipo").selectOption("LAPTOP");
   await page.getByRole("button", { name: "Registrar activo" }).click();
   expect((await createResponse).status()).toBe(201);

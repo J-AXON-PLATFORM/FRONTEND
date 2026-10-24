@@ -422,6 +422,35 @@ h1 {
 .scope-card p { margin: 0; color: var(--muted); }
 .scope-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; }
 .scope-pagination button { min-height: 2.7rem; color: #285f51; border: 1px solid #285f51; background: transparent; }
+.executor-workspace { border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.executor-grid { display: grid; grid-template-columns: minmax(17rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1rem; margin-top: 2rem; }
+.executor-form, .executor-list, .executor-detail { border-top: 0.45rem solid #b44b2a; padding: 1.5rem; background: var(--panel); }
+.executor-form h3, .executor-list h3, .executor-detail h3 { margin-top: 0; }
+.executor-form fieldset { min-width: 0; border: 1px solid var(--line); margin: 1rem 0; padding: 1rem; }
+.executor-form legend { padding: 0 0.4rem; font-size: 0.78rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.executor-scope-options { display: grid; gap: 0.5rem; max-height: 15rem; overflow-y: auto; }
+.executor-scope-options label { display: grid; grid-template-columns: auto 1fr; gap: 0.75rem; align-items: start; padding: 0.65rem; background: #f0eee8; cursor: pointer; }
+.executor-scope-options input { margin-top: 0.2rem; accent-color: #b44b2a; }
+.executor-scope-options span { display: grid; gap: 0.2rem; }
+.executor-scope-options small, .executor-card small { color: var(--muted); overflow-wrap: anywhere; }
+.executor-form > button, .executor-key-form button, .executor-pagination button { min-height: 3rem; border: 0; padding: 0.75rem 1rem; color: white; background: #b44b2a; font-weight: 800; cursor: pointer; }
+.executor-form button:disabled, .executor-key-form button:disabled, .executor-pagination button:disabled { cursor: not-allowed; opacity: 0.5; }
+.executor-list { display: grid; align-content: start; gap: 0.75rem; }
+.executor-card { display: flex; justify-content: space-between; gap: 1rem; border: 1px solid var(--line); border-left: 0.35rem solid #b44b2a; padding: 1rem; color: var(--dark); background: transparent; text-align: left; cursor: pointer; }
+.executor-card[aria-pressed="true"] { color: white; background: var(--dark); }
+.executor-card span:first-child { display: grid; gap: 0.25rem; min-width: 0; }
+.executor-card span:last-child { flex: 0 0 auto; font-size: 0.78rem; font-weight: 800; }
+.executor-detail { margin-top: 1rem; }
+.executor-detail dl { display: grid; grid-template-columns: minmax(8rem, 0.25fr) 1fr; margin: 1.5rem 0 0; }
+.executor-detail dt, .executor-detail dd { border-top: 1px solid var(--line); padding: 0.75rem 0; }
+.executor-detail dt { color: var(--muted); font-size: 0.75rem; font-weight: 800; text-transform: uppercase; }
+.executor-detail dd { margin: 0; overflow-wrap: anywhere; }
+.executor-detail ul { margin: 0; padding-left: 1.2rem; }
+.executor-key-form { display: grid; gap: 1rem; border-top: 1px solid var(--line); margin-top: 1.5rem; padding-top: 1.5rem; }
+.executor-key-form code { display: block; padding: 1rem; background: var(--dark); color: white; overflow-wrap: anywhere; }
+.executor-key-form textarea { width: 100%; resize: vertical; font-family: ui-monospace, monospace; }
+.executor-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.executor-pagination button { min-height: 2.7rem; color: #b44b2a; border: 1px solid #b44b2a; background: transparent; }
 
 @media (max-width: 48rem) {
   .auth-shell { grid-template-columns: 1fr; }
@@ -456,6 +485,11 @@ h1 {
   .scope-form { grid-template-columns: 1fr; }
   .scope-card { align-items: stretch; flex-direction: column; }
   .scope-pagination { align-items: stretch; flex-direction: column; text-align: center; }
+  .executor-grid { grid-template-columns: 1fr; }
+  .executor-card { align-items: stretch; flex-direction: column; }
+  .executor-detail dl { grid-template-columns: 1fr; }
+  .executor-detail dd { border-top: 0; padding-top: 0; }
+  .executor-pagination { align-items: stretch; flex-direction: column; text-align: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {

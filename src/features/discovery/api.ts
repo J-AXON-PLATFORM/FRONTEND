@@ -21,6 +21,27 @@ export type AuthorizedScopePage = {
   totalPages: number;
 };
 
+export type DiscoveryExecutor = {
+  executorId: string;
+  name: string;
+  scopeIds: string[];
+  status: "PENDING";
+  publicKeyRegistered: boolean;
+  publicKeyFingerprint: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+  version: 0;
+};
+
+export type DiscoveryExecutorPage = {
+  items: DiscoveryExecutor[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UTC_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
@@ -31,10 +52,68 @@ export class AuthorizedScopeContractError extends Error {
   }
 }
 
-export async function listAuthorizedScopes(page: number): Promise<AuthorizedScopePage> {
+export class DiscoveryExecutorContractError extends Error {
+  constructor() {
+    super("La respuesta del Discovery Executor no cumple el contrato esperado.");
+  }
+}
+
+export async function listAuthorizedScopes(page: number, size = 20): Promise<AuthorizedScopePage> {
   return parseAuthorizedScopePage(await read(await fetch(
-    `${apiUrl}/discovery/scopes?page=${page}&size=20`,
+    `${apiUrl}/discovery/scopes?page=${page}&size=${size}`,
     { credentials: "include" },
+  )));
+}
+
+export async function listAllAuthorizedScopes(): Promise<AuthorizedScope[]> {
+  const first = await listAuthorizedScopes(0, 50);
+  const remaining = await Promise.all(Array.from(
+    { length: Math.max(0, first.totalPages - 1) },
+    (_, index) => listAuthorizedScopes(index + 1, 50),
+  ));
+  return [first, ...remaining].flatMap((page) => page.items);
+}
+
+export async function listDiscoveryExecutors(page: number): Promise<DiscoveryExecutorPage> {
+  return parseDiscoveryExecutorPage(await read(await fetch(
+    `${apiUrl}/discovery/executors?page=${page}&size=20`,
+    { credentials: "include" },
+  )));
+}
+
+export async function createDiscoveryExecutor(
+  name: string,
+  scopeIds: string[],
+  csrfToken: string,
+): Promise<DiscoveryExecutor> {
+  return parseDiscoveryExecutor(await read(await fetch(`${apiUrl}/discovery/executors`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ name, scopeIds }),
+  })));
+}
+
+export async function getDiscoveryExecutor(executorId: string): Promise<DiscoveryExecutor> {
+  return parseDiscoveryExecutor(await read(await fetch(
+    `${apiUrl}/discovery/executors/${encodeURIComponent(executorId)}`,
+    { credentials: "include" },
+  )));
+}
+
+export async function registerDiscoveryExecutorPublicKey(
+  executorId: string,
+  publicKey: string,
+  csrfToken: string,
+): Promise<DiscoveryExecutor> {
+  return parseDiscoveryExecutor(await read(await fetch(
+    `${apiUrl}/discovery/executors/${encodeURIComponent(executorId)}/ssh-key`,
+    {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ publicKey }),
+    },
   )));
 }
 
@@ -113,6 +192,61 @@ export function parseAuthorizedScopePage(value: unknown): AuthorizedScopePage {
   return { ...value, items: value.items.map(parseAuthorizedScope) } as AuthorizedScopePage;
 }
 
+export function parseDiscoveryExecutor(value: unknown): DiscoveryExecutor {
+  if (!isRecord(value)) throw new DiscoveryExecutorContractError();
+  const keys = new Set([
+    "executorId", "name", "scopeIds", "status", "publicKeyRegistered",
+    "publicKeyFingerprint", "createdByUserId", "createdAt", "updatedAt", "version",
+  ]);
+  const scopeIds = value.scopeIds;
+  const fingerprintValid = value.publicKeyFingerprint === null
+    || (typeof value.publicKeyFingerprint === "string"
+      && /^SHA256:[A-Za-z0-9+/]{43}$/.test(value.publicKeyFingerprint));
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.executorId !== "string"
+      || !UUID_V4.test(value.executorId)
+      || typeof value.name !== "string"
+      || [...value.name].length < 1
+      || [...value.name].length > 200
+      || value.name !== value.name.trim()
+      || !Array.isArray(scopeIds)
+      || scopeIds.length < 1
+      || scopeIds.length > 50
+      || !scopeIds.every((scopeId) => typeof scopeId === "string" && UUID_V4.test(scopeId))
+      || new Set(scopeIds).size !== scopeIds.length
+      || value.status !== "PENDING"
+      || typeof value.publicKeyRegistered !== "boolean"
+      || !fingerprintValid
+      || value.publicKeyRegistered !== (value.publicKeyFingerprint !== null)
+      || typeof value.createdByUserId !== "string"
+      || !UUID_V4.test(value.createdByUserId)
+      || !isDateTime(value.createdAt)
+      || !isDateTime(value.updatedAt)
+      || value.version !== 0) {
+    throw new DiscoveryExecutorContractError();
+  }
+  return value as DiscoveryExecutor;
+}
+
+export function parseDiscoveryExecutorPage(value: unknown): DiscoveryExecutorPage {
+  if (!isRecord(value)) throw new DiscoveryExecutorContractError();
+  const keys = new Set(["items", "page", "size", "totalElements", "totalPages"]);
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || !Array.isArray(value.items)
+      || !value.items.every((item) => safelyParsesExecutor(item))
+      || !isNonNegativeInteger(value.page)
+      || !Number.isSafeInteger(value.size)
+      || (value.size as number) < 1
+      || (value.size as number) > 50
+      || !isNonNegativeInteger(value.totalElements)
+      || !isNonNegativeInteger(value.totalPages)) {
+    throw new DiscoveryExecutorContractError();
+  }
+  return { ...value, items: value.items.map(parseDiscoveryExecutor) } as DiscoveryExecutorPage;
+}
+
 async function read(response: Response): Promise<unknown> {
   if (!response.ok) {
     const problem = response.headers.get("content-type")?.includes("application/problem+json")
@@ -126,6 +260,15 @@ async function read(response: Response): Promise<unknown> {
 function safelyParsesScope(value: unknown) {
   try {
     parseAuthorizedScope(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safelyParsesExecutor(value: unknown) {
+  try {
+    parseDiscoveryExecutor(value);
     return true;
   } catch {
     return false;
