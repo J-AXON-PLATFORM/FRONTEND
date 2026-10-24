@@ -32,6 +32,7 @@ describe("HomePage", () => {
     expect(await screen.findByRole("heading", { name: "Bootstrap.Admin" })).toBeDefined();
     expect(screen.getByText("IT OPERATOR")).toBeDefined();
     expect(screen.getByText("SYSTEM ADMIN")).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Discovery Executors" })).toBeDefined();
   });
 
   it("clears cached state and redirects when the session is absent", async () => {
@@ -81,5 +82,36 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "Tickets" })).toBeNull();
     expect(await screen.findByRole("heading", { name: "Bandeja técnica" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeDefined();
+  });
+
+  it("does not expose or request Discovery Executors for operator-only sessions", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes("/auth/me")) {
+        return new Response(JSON.stringify({
+          userId: "34844482-1d29-4d30-87fd-1bb67a22e050",
+          username: "Inventory.Operator",
+          roles: ["IT_OPERATOR"],
+          csrfToken: "sensitive-session-value-kept-in-memory",
+          expiresAt: "2026-10-25T00:00:00Z",
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        items: [], page: 0, size: 20, totalElements: 0, totalPages: 0,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <HomePage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Inventory.Operator" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Ámbitos autorizados" })).toBeDefined();
+    expect(screen.queryByRole("heading", { name: "Discovery Executors" })).toBeNull();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/discovery/executors"))).toBe(false);
   });
 });

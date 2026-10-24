@@ -141,6 +141,11 @@ async function refreshScopes(
   role: string,
 ) {
   await queryClient.invalidateQueries({ queryKey: ["discovery", "authorized-scopes", userId, role] });
+  if (role === "SYSTEM_ADMIN") {
+    await queryClient.invalidateQueries({
+      queryKey: ["discovery", "executor-scope-options", userId, "SYSTEM_ADMIN"],
+    });
+  }
 }
 
 function mutationError(error: Error | null, action: string) {
