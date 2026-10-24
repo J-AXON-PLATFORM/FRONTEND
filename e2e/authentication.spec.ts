@@ -31,6 +31,44 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page.getByText("IT OPERATOR")).toBeVisible();
   await expect(page.getByText("SYSTEM ADMIN")).toBeVisible();
 
+  const scopeName = `E2E authorized network ${Date.now()}`;
+  const createScopeResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/discovery/scopes") && response.request().method() === "POST"
+  ));
+  await page.getByLabel("Nombre del ámbito").fill(scopeName);
+  await page.getByLabel("Red CIDR canónica").fill("198.51.100.0/24");
+  await page.getByRole("button", { name: "Crear ámbito" }).click();
+  const createdScopeResponse = await createScopeResponse;
+  expect(createdScopeResponse.status()).toBe(201);
+  const createdScope = await createdScopeResponse.json() as { scopeId: string; version: number };
+  const scopeCard = page.getByRole("heading", { name: scopeName }).locator("../..");
+  await expect(scopeCard).toContainText("198.51.100.0/24");
+  await expect(scopeCard).toContainText("ACTIVE");
+
+  const disableScopeResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/discovery/scopes/${createdScope.scopeId}/status`)
+      && response.request().method() === "PUT"
+  ));
+  await scopeCard.getByRole("button", { name: `Deshabilitar ${scopeName}` }).click();
+  expect((await disableScopeResponse).status()).toBe(200);
+  await expect(scopeCard).toContainText("DISABLED");
+  const persistedScope = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT s.status || ':' || s.version || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = s.id AND e.event_type = 'DISCOVERY_SCOPE_CREATED'
+         AND e.resource_version = 0 AND e.payload = '{"status":"ACTIVE"}'::jsonb
+         AND NOT e.payload ? 'name' AND NOT e.payload ? 'cidr') || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = s.id AND e.event_type = 'DISCOVERY_SCOPE_STATUS_CHANGED'
+         AND e.resource_version = 1
+         AND e.payload = '{"previousStatus":"ACTIVE","newStatus":"DISABLED"}'::jsonb
+         AND NOT e.payload ? 'name' AND NOT e.payload ? 'cidr')
+      FROM discovery.authorized_scopes s WHERE s.id = '${createdScope.scopeId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedScope).toBe("DISABLED:1:1:1");
+
   const supportUsername = `support.only.${Date.now()}`;
   const supportPassword = `Support-${crypto.randomUUID()}-Aa9!`;
   const createUserResponse = page.waitForResponse((response) => (
@@ -87,7 +125,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
 
   const assetName = `E2E Workstation ${Date.now()}`;
   const createResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/assets") && response.request().method() === "POST");
-  await page.getByLabel("Nombre").fill(assetName);
+  await page.getByLabel("Nombre", { exact: true }).fill(assetName);
   await page.getByLabel("Tipo").selectOption("LAPTOP");
   await page.getByRole("button", { name: "Registrar activo" }).click();
   expect((await createResponse).status()).toBe(201);

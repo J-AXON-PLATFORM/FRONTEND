@@ -20,6 +20,7 @@ assert_level() {
 assert_level DOCS_ONLY README.md
 assert_level APPLICATION src/features/support/api.ts
 assert_level APPLICATION src/app/globals.css docs/USER_GUIDE.md
+assert_level APPLICATION e2e/authentication.spec.ts
 assert_level PLATFORM_FULL .github/workflows/frontend-ci.yml
 assert_level PLATFORM_FULL package-lock.json
 assert_level PLATFORM_FULL Dockerfile

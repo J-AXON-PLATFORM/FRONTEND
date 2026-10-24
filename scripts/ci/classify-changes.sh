@@ -16,7 +16,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       level="PLATFORM_FULL"
       break
       ;;
-    src/*|public/*|tests/*)
+    src/*|public/*|tests/*|e2e/*)
       level="APPLICATION"
       ;;
     doc/*|docs/*|README.md|AGENTS.md)
