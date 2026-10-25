@@ -42,6 +42,14 @@ const secondExecutor = {
   name: "Branch executor",
 };
 const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKg2VaOybk2P/sGQKcJkL7QWqLpzaxLfOjfPCsqSy5aL";
+const fingerprint = "SHA256:vi4Mo/pzHrbpqbCCSjJz4KjU8NjWTGGjHSXfTYzA9aE";
+const connection = {
+  host: "sftp.example.internal",
+  port: 2022,
+  username: `discovery-executor-${executor.executorId}`,
+  hostKey: publicKey,
+  hostKeyFingerprint: fingerprint,
+};
 
 afterEach(() => {
   cleanup();
@@ -51,6 +59,8 @@ afterEach(() => {
 
 describe("DiscoveryExecutorWorkspace", () => {
   it("pre-registers an executor and registers only its public key", async () => {
+    let activated = false;
+    let keyRegistered = false;
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/discovery/scopes")) {
@@ -58,11 +68,26 @@ describe("DiscoveryExecutorWorkspace", () => {
       }
       if (url.endsWith("/discovery/executors") && init?.method === "POST") return json(executor, 201);
       if (url.endsWith(`/discovery/executors/${executor.executorId}/ssh-key`) && init?.method === "PUT") {
+        keyRegistered = true;
         return json({
           ...executor,
           publicKeyRegistered: true,
-          publicKeyFingerprint: "SHA256:vi4Mo/pzHrbpqbCCSjJz4KjU8NjWTGGjHSXfTYzA9aE",
+          publicKeyFingerprint: fingerprint,
           updatedAt: "2026-10-24T13:10:00Z",
+        });
+      }
+      if (url.endsWith(`/discovery/executors/${executor.executorId}/activate`) && init?.method === "POST") {
+        activated = true;
+        return json(connection);
+      }
+      if (url.endsWith(`/discovery/executors/${executor.executorId}`)) {
+        return json({
+          ...executor,
+          status: activated ? "ACTIVE" : "PENDING",
+          publicKeyRegistered: keyRegistered,
+          publicKeyFingerprint: keyRegistered ? fingerprint : null,
+          updatedAt: "2026-10-24T13:10:00Z",
+          version: activated ? 1 : 0,
         });
       }
       if (url.includes("/discovery/executors?page=")) {
@@ -79,12 +104,24 @@ describe("DiscoveryExecutorWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pre-registrar executor" }));
 
     expect(await screen.findByText(/jaxon-discovery-executor initialize/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Activar Discovery Executor" })).toBeNull();
     const keyInput = screen.getByLabelText("Clave pública Ed25519") as HTMLTextAreaElement;
     fireEvent.change(keyInput, { target: { value: publicKey } });
     fireEvent.click(screen.getByRole("button", { name: "Registrar clave pública" }));
 
-    expect(await screen.findByText("SHA256:vi4Mo/pzHrbpqbCCSjJz4KjU8NjWTGGjHSXfTYzA9aE")).toBeTruthy();
+    expect(await screen.findByText(fingerprint)).toBeTruthy();
     expect(screen.queryByLabelText("Clave pública Ed25519")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Activar Discovery Executor" }));
+    const connectionCard = await screen.findByRole("article", {
+      name: "Conexión SFTP del Discovery Executor",
+    });
+    expect(connectionCard.textContent).toContain(connection.username);
+    expect(connectionCard.textContent).toContain(connection.hostKeyFingerprint);
+    expect(await screen.findByText(/ACTIVE · versión 1/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Activar Discovery Executor" })).toBeNull();
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+    expect(document.body.textContent).not.toContain(administrator.csrfToken);
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/discovery/executors", expect.objectContaining({
       method: "POST",
       credentials: "include",
@@ -96,6 +133,14 @@ describe("DiscoveryExecutorWorkspace", () => {
       expect.objectContaining({
         method: "PUT",
         body: JSON.stringify({ publicKey }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/discovery/executors/${executor.executorId}/activate`,
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: { "X-CSRF-Token": administrator.csrfToken },
       }),
     );
   });
@@ -169,6 +214,82 @@ describe("DiscoveryExecutorWorkspace", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("La selección cambió");
     expect(postRequested).toBe(false);
   });
+
+  it("does not retry activation and reports unavailable SFTP safely", async () => {
+    const keyed = {
+      ...executor,
+      publicKeyRegistered: true,
+      publicKeyFingerprint: fingerprint,
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) {
+        return json({ items: [scope], page: 0, size: 50, totalElements: 1, totalPages: 1 });
+      }
+      if (url.includes("/discovery/executors?page=")) {
+        return json({ items: [keyed], page: 0, size: 20, totalElements: 1, totalPages: 1 });
+      }
+      if (url.endsWith(`/discovery/executors/${executor.executorId}`)) return json(keyed);
+      if (url.endsWith(`/discovery/executors/${executor.executorId}/activate`) && init?.method === "POST") {
+        return json({
+          code: "DISCOVERY_SFTP_PROVISIONING_UNAVAILABLE",
+          correlationId: "2f521aa1-9345-4cc3-94d1-f60257b587cb",
+        }, 503, "application/problem+json");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Office executor/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Activar Discovery Executor" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("no está disponible");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/activate"))).toHaveLength(1);
+    expect(await screen.findByText(/PENDING · versión 0/)).toBeTruthy();
+  });
+
+  it("hides connection data when another executor is selected", async () => {
+    const keyed = {
+      ...executor,
+      publicKeyRegistered: true,
+      publicKeyFingerprint: fingerprint,
+    };
+    const secondKeyed = {
+      ...secondExecutor,
+      publicKeyRegistered: true,
+      publicKeyFingerprint: fingerprint,
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) {
+        return json({ items: [scope], page: 0, size: 50, totalElements: 1, totalPages: 1 });
+      }
+      if (url.includes("/discovery/executors?page=")) {
+        return json({ items: [keyed, secondKeyed], page: 0, size: 20, totalElements: 2, totalPages: 1 });
+      }
+      if (url.endsWith(`/discovery/executors/${executor.executorId}/activate`) && init?.method === "POST") {
+        return json(connection);
+      }
+      if (url.endsWith(`/discovery/executors/${executor.executorId}`)) return json(keyed);
+      if (url.endsWith(`/discovery/executors/${secondExecutor.executorId}`)) return json(secondKeyed);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Office executor/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Activar Discovery Executor" }));
+    expect(await screen.findByRole("article", {
+      name: "Conexión SFTP del Discovery Executor",
+    })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Branch executor/ }));
+    await screen.findByRole("heading", { name: "Branch executor" });
+    expect(screen.queryByRole("article", {
+      name: "Conexión SFTP del Discovery Executor",
+    })).toBeNull();
+  });
 });
 
 function renderWorkspace() {
@@ -183,9 +304,9 @@ function renderWorkspace() {
   return queryClient;
 }
 
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, contentType = "application/json") {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": contentType },
   });
 }
