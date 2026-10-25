@@ -89,6 +89,92 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   expect((await registerExecutorKeyResponse).status()).toBe(200);
   await expect(executorWorkspace.getByText(initializedExecutor.publicKeyFingerprint)).toBeVisible();
 
+  const activateExecutorResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/discovery/executors/${createdExecutor.executorId}/activate`)
+      && response.request().method() === "POST"
+  ));
+  await executorWorkspace.getByRole("button", { name: "Activar Discovery Executor" }).click();
+  const activatedExecutorResponse = await activateExecutorResponse;
+  expect(activatedExecutorResponse.status()).toBe(200);
+  const executorConnection = await activatedExecutorResponse.json() as {
+    host: string;
+    port: number;
+    username: string;
+    hostKey: string;
+    hostKeyFingerprint: string;
+  };
+  expect(executorConnection.username).toBe(`discovery-executor-${createdExecutor.executorId}`);
+  const executorConnectionCard = executorWorkspace.getByRole("article", {
+    name: "Conexión SFTP del Discovery Executor",
+  });
+  await expect(executorConnectionCard).toContainText(executorConnection.hostKeyFingerprint);
+  await expect(executorWorkspace.getByText(/ACTIVE · versión 1/)).toBeVisible();
+  await expect(executorWorkspace.getByRole("button", { name: "Activar Discovery Executor" }))
+    .not.toBeVisible();
+  expect((await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))))
+    .toEqual({ local: 0, session: 0 });
+
+  const configuredExecutor = JSON.parse(execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-discovery-executor",
+    "configure-sftp", "--state-dir", executorStateDir,
+    "--host", executorConnection.host,
+    "--port", String(executorConnection.port),
+    "--username", executorConnection.username,
+    "--host-key", executorConnection.hostKey,
+  ], { encoding: "utf8" })) as { changed: boolean; hostKeyFingerprint: string };
+  expect(configuredExecutor.changed).toBe(true);
+  expect(configuredExecutor.hostKeyFingerprint).toBe(executorConnection.hostKeyFingerprint);
+  const verifiedExecutor = JSON.parse(execFileSync("uv", [
+    "run", "--project", automationDir!, "--locked", "jaxon-discovery-executor",
+    "verify-sftp", "--state-dir", executorStateDir,
+  ], { encoding: "utf8" })) as { status: string; executorId: string };
+  expect(verifiedExecutor).toMatchObject({
+    status: "verified",
+    executorId: createdExecutor.executorId,
+  });
+
+  const repeatedExecutorActivation = await page.evaluate(async ({ api, executorId, csrf }) => {
+    const response = await fetch(`${api}/api/v1/discovery/executors/${executorId}/activate`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": csrf },
+    });
+    return { status: response.status, body: await response.json() };
+  }, {
+    api: backendUrl!,
+    executorId: createdExecutor.executorId,
+    csrf: activatedExecutorResponse.request().headers()["x-csrf-token"],
+  });
+  expect(repeatedExecutorActivation).toEqual({ status: 200, body: executorConnection });
+
+  const discoveryTokenResponse = await fetch(`${sftpGoApiUrl}/token`, {
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${sftpGoAdminUsername}:${sftpGoAdminPassword}`).toString("base64")}`,
+    },
+  });
+  expect(discoveryTokenResponse.status).toBe(200);
+  const discoveryToken = (await discoveryTokenResponse.json() as { access_token: string }).access_token;
+  const discoveryUserResponse = await fetch(
+    `${sftpGoApiUrl}/users/${encodeURIComponent(executorConnection.username)}`,
+    { headers: { Authorization: `Bearer ${discoveryToken}` } },
+  );
+  expect(discoveryUserResponse.status).toBe(200);
+  const discoveryUser = await discoveryUserResponse.json() as {
+    username: string;
+    home_dir: string;
+    permissions: Record<string, string[]>;
+    quota_size: number;
+    quota_files: number;
+  };
+  expect(discoveryUser).toMatchObject({
+    username: executorConnection.username,
+    home_dir: `/srv/sftpgo/data/${executorConnection.username}`,
+    permissions: { "/": ["list"] },
+    quota_size: 0,
+    quota_files: 0,
+  });
+  expect(discoveryUser).not.toHaveProperty("password");
+
   const disableScopeResponse = page.waitForResponse((response) => (
     response.url().endsWith(`/api/v1/discovery/scopes/${createdScope.scopeId}/status`)
       && response.request().method() === "PUT"
@@ -117,8 +203,9 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
     "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
     "--command", `SELECT x.status || ':' || x.version || ':' ||
-      (SELECT count(*) FROM discovery.discovery_executor_scopes a
-       WHERE a.executor_id = x.id AND a.scope_id = '${createdScope.scopeId}') || ':' ||
+       (SELECT count(*) FROM discovery.discovery_executor_scopes a
+        WHERE a.executor_id = x.id AND a.scope_id = '${createdScope.scopeId}') || ':' ||
+       ((x.sftp_username = '${executorConnection.username}' AND x.activated_at IS NOT NULL)::int) || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = x.id AND e.event_type = 'DISCOVERY_EXECUTOR_PRE_REGISTERED'
          AND e.resource_version = 0 AND e.payload = '{"status":"PENDING"}'::jsonb) || ':' ||
@@ -126,14 +213,17 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
        WHERE i.discovery_executor_id = x.id AND i.agent_id IS NULL
          AND i.identity_type = 'DISCOVERY_EXECUTOR'
          AND i.public_key_fingerprint = '${initializedExecutor.publicKeyFingerprint}') || ':' ||
-      (SELECT count(*) FROM identity.outbox_events e
-       WHERE e.resource_id = x.id
+       (SELECT count(*) FROM discovery.outbox_events e
+        WHERE e.resource_id = x.id AND e.event_type = 'DISCOVERY_EXECUTOR_ACTIVATED'
+          AND e.resource_version = 1 AND e.payload = '{"status":"ACTIVE"}'::jsonb) || ':' ||
+       (SELECT count(*) FROM identity.outbox_events e
+        WHERE e.resource_id = x.id
          AND e.event_type = 'DISCOVERY_EXECUTOR_PUBLIC_KEY_REGISTERED'
          AND e.resource_type = 'DISCOVERY_EXECUTOR_TECHNICAL_IDENTITY'
          AND e.payload = '{}'::jsonb)
       FROM discovery.discovery_executors x WHERE x.id = '${createdExecutor.executorId}'`,
   ], { encoding: "utf8" }).trim();
-  expect(persistedExecutor).toBe("PENDING:0:1:1:1:1");
+  expect(persistedExecutor).toBe("ACTIVE:1:1:1:1:1:1:1");
 
   const supportUsername = `support.only.${Date.now()}`;
   const supportPassword = `Support-${crypto.randomUUID()}-Aa9!`;

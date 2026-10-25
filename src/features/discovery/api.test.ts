@@ -5,6 +5,7 @@ import {
   parseAuthorizedScope,
   parseAuthorizedScopePage,
   parseDiscoveryExecutor,
+  parseDiscoveryExecutorConnection,
   parseDiscoveryExecutorPage,
 } from "./api";
 
@@ -29,6 +30,13 @@ const executor = {
   createdAt: "2026-10-24T12:00:00Z",
   updatedAt: "2026-10-24T12:00:00Z",
   version: 0,
+};
+const connection = {
+  host: "sftp.example.internal",
+  port: 2022,
+  username: `discovery-executor-${executor.executorId}`,
+  hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKg2VaOybk2P/sGQKcJkL7QWqLpzaxLfOjfPCsqSy5aL",
+  hostKeyFingerprint: "SHA256:s5flX5trJMwyaxA/ME8Kyid8X3Q4XdOM487UdG7jOnA",
 };
 
 describe("Discovery API parsers", () => {
@@ -58,6 +66,13 @@ describe("Discovery API parsers", () => {
 
   it("accepts closed Discovery Executor and page responses", () => {
     expect(parseDiscoveryExecutor(executor)).toEqual(executor);
+    expect(parseDiscoveryExecutor({
+      ...executor,
+      status: "ACTIVE",
+      publicKeyRegistered: true,
+      publicKeyFingerprint: connection.hostKeyFingerprint,
+      version: 1,
+    })).toMatchObject({ status: "ACTIVE", version: 1 });
     expect(parseDiscoveryExecutorPage({
       items: [executor], page: 0, size: 20, totalElements: 1, totalPages: 1,
     }).items).toEqual([executor]);
@@ -68,6 +83,7 @@ describe("Discovery API parsers", () => {
     expect(() => parseDiscoveryExecutor({ ...executor, executorId: "invalid" })).toThrow(DiscoveryExecutorContractError);
     expect(() => parseDiscoveryExecutor({ ...executor, scopeIds: [] })).toThrow(DiscoveryExecutorContractError);
     expect(() => parseDiscoveryExecutor({ ...executor, scopeIds: [scope.scopeId, scope.scopeId] })).toThrow(DiscoveryExecutorContractError);
+    expect(() => parseDiscoveryExecutor({ ...executor, status: "REVOKED" })).toThrow(DiscoveryExecutorContractError);
     expect(() => parseDiscoveryExecutor({ ...executor, status: "ACTIVE" })).toThrow(DiscoveryExecutorContractError);
     expect(() => parseDiscoveryExecutor({ ...executor, version: 1 })).toThrow(DiscoveryExecutorContractError);
     expect(() => parseDiscoveryExecutor({
@@ -79,5 +95,24 @@ describe("Discovery API parsers", () => {
     expect(() => parseDiscoveryExecutorPage({
       items: [executor], page: 0, size: 51, totalElements: 1, totalPages: 1,
     })).toThrow(DiscoveryExecutorContractError);
+  });
+
+  it("accepts only the closed public Discovery SFTP connection", () => {
+    expect(parseDiscoveryExecutorConnection(connection, executor.executorId)).toEqual(connection);
+    expect(() => parseDiscoveryExecutorConnection({ ...connection, password: "secret" }, executor.executorId))
+      .toThrow(DiscoveryExecutorContractError);
+    expect(() => parseDiscoveryExecutorConnection({ ...connection, port: 0 }, executor.executorId))
+      .toThrow(DiscoveryExecutorContractError);
+    expect(() => parseDiscoveryExecutorConnection({ ...connection, username: "agent-value" }, executor.executorId))
+      .toThrow(DiscoveryExecutorContractError);
+    expect(() => parseDiscoveryExecutorConnection({
+      ...connection,
+      username: `discovery-executor-${scope.scopeId}`,
+    }, executor.executorId))
+      .toThrow(DiscoveryExecutorContractError);
+    expect(() => parseDiscoveryExecutorConnection({ ...connection, hostKey: "ssh-rsa AAAA" }, executor.executorId))
+      .toThrow(DiscoveryExecutorContractError);
+    expect(() => parseDiscoveryExecutorConnection({ ...connection, hostKeyFingerprint: "SHA256:bad" }, executor.executorId))
+      .toThrow(DiscoveryExecutorContractError);
   });
 });

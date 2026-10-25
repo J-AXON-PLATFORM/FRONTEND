@@ -25,13 +25,21 @@ export type DiscoveryExecutor = {
   executorId: string;
   name: string;
   scopeIds: string[];
-  status: "PENDING";
+  status: "PENDING" | "ACTIVE";
   publicKeyRegistered: boolean;
   publicKeyFingerprint: string | null;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
-  version: 0;
+  version: 0 | 1;
+};
+
+export type DiscoveryExecutorConnection = {
+  host: string;
+  port: number;
+  username: string;
+  hostKey: string;
+  hostKeyFingerprint: string;
 };
 
 export type DiscoveryExecutorPage = {
@@ -115,6 +123,20 @@ export async function registerDiscoveryExecutorPublicKey(
       body: JSON.stringify({ publicKey }),
     },
   )));
+}
+
+export async function activateDiscoveryExecutor(
+  executorId: string,
+  csrfToken: string,
+): Promise<DiscoveryExecutorConnection> {
+  return parseDiscoveryExecutorConnection(await read(await fetch(
+    `${apiUrl}/discovery/executors/${encodeURIComponent(executorId)}/activate`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": csrfToken },
+    },
+  )), executorId);
 }
 
 export async function createAuthorizedScope(
@@ -215,7 +237,7 @@ export function parseDiscoveryExecutor(value: unknown): DiscoveryExecutor {
       || scopeIds.length > 50
       || !scopeIds.every((scopeId) => typeof scopeId === "string" && UUID_V4.test(scopeId))
       || new Set(scopeIds).size !== scopeIds.length
-      || value.status !== "PENDING"
+      || (value.status !== "PENDING" && value.status !== "ACTIVE")
       || typeof value.publicKeyRegistered !== "boolean"
       || !fingerprintValid
       || value.publicKeyRegistered !== (value.publicKeyFingerprint !== null)
@@ -223,10 +245,42 @@ export function parseDiscoveryExecutor(value: unknown): DiscoveryExecutor {
       || !UUID_V4.test(value.createdByUserId)
       || !isDateTime(value.createdAt)
       || !isDateTime(value.updatedAt)
-      || value.version !== 0) {
+      || (value.status === "PENDING" && value.version !== 0)
+      || (value.status === "ACTIVE" && (
+        value.version !== 1
+        || value.publicKeyRegistered !== true
+        || value.publicKeyFingerprint === null
+      ))) {
     throw new DiscoveryExecutorContractError();
   }
   return value as DiscoveryExecutor;
+}
+
+export function parseDiscoveryExecutorConnection(
+  value: unknown,
+  executorId: string,
+): DiscoveryExecutorConnection {
+  if (!isRecord(value)) throw new DiscoveryExecutorContractError();
+  const keys = new Set(["host", "port", "username", "hostKey", "hostKeyFingerprint"]);
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.host !== "string"
+      || value.host.length < 1
+      || value.host.length > 253
+      || value.host !== value.host.trim()
+      || [...value.host].some((character) => character.charCodeAt(0) < 33 || character.charCodeAt(0) === 127)
+      || !Number.isSafeInteger(value.port)
+      || (value.port as number) < 1
+      || (value.port as number) > 65535
+      || typeof value.username !== "string"
+      || value.username !== `discovery-executor-${executorId}`
+      || typeof value.hostKey !== "string"
+      || !/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$/.test(value.hostKey)
+      || typeof value.hostKeyFingerprint !== "string"
+      || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(value.hostKeyFingerprint)) {
+    throw new DiscoveryExecutorContractError();
+  }
+  return value as DiscoveryExecutorConnection;
 }
 
 export function parseDiscoveryExecutorPage(value: unknown): DiscoveryExecutorPage {

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  activateDiscoveryExecutor,
   createDiscoveryExecutor,
   DiscoveryExecutorContractError,
   getDiscoveryExecutor,
@@ -103,9 +104,20 @@ export function DiscoveryExecutorWorkspace({ session }: Readonly<{ session: Sess
       }
     },
   });
+  const activation = useMutation({
+    mutationFn: async (executorId: string) => ({
+      executorId,
+      connection: await activateDiscoveryExecutor(executorId, session.csrfToken),
+    }),
+    retry: false,
+    onSuccess: async () => {
+      await refreshExecutors(queryClient, session.userId);
+    },
+  });
 
   const authenticationError = [
     scopes.error, executors.error, detail.error, creation.error, keyRegistration.error,
+    activation.error,
   ].some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
     if (authenticationError) {
@@ -146,6 +158,7 @@ export function DiscoveryExecutorWorkspace({ session }: Readonly<{ session: Sess
 
   function selectExecutor(executorId: string) {
     setPublicKey("");
+    activation.reset();
     setSelectedExecutorId(executorId);
   }
 
@@ -258,6 +271,39 @@ export function DiscoveryExecutorWorkspace({ session }: Readonly<{ session: Sess
               {keyRegistration.isError && <p className="form-error" role="alert">{executorError(keyRegistration.error, "registrar la clave de")}</p>}
             </form>
           )}
+          {selected?.status === "PENDING" && selected.publicKeyRegistered && (
+            <div className="executor-activation">
+              <h3>Activar canal SFTP</h3>
+              <p>La activación reconcilia una cuenta exclusiva y devuelve solo datos públicos de conexión.</p>
+              <button
+                type="button"
+                disabled={activation.isPending}
+                onClick={() => activation.mutate(selected.executorId)}
+              >
+                {activation.isPending ? "Activando..." : "Activar Discovery Executor"}
+              </button>
+              {activation.isError && (
+                <p className="form-error" role="alert">
+                  {executorError(activation.error, "activar")}
+                </p>
+              )}
+            </div>
+          )}
+          {activation.data?.executorId === selectedExecutorId && (
+            <article
+              className="executor-connection connection-card"
+              aria-label="Conexión SFTP del Discovery Executor"
+            >
+              <h3>Conexión SFTP</h3>
+              <dl>
+                <div><dt>Host</dt><dd>{activation.data.connection.host}</dd></div>
+                <div><dt>Puerto</dt><dd>{activation.data.connection.port}</dd></div>
+                <div><dt>Usuario</dt><dd>{activation.data.connection.username}</dd></div>
+                <div><dt>Host key</dt><dd>{activation.data.connection.hostKey}</dd></div>
+                <div><dt>Huella</dt><dd>{activation.data.connection.hostKeyFingerprint}</dd></div>
+              </dl>
+            </article>
+          )}
         </div>
       )}
     </section>
@@ -308,6 +354,7 @@ function executorError(error: Error | null, action: string) {
   if (error.status === 403) return "La sesión no autoriza esta operación.";
   if (error.status === 404) return "El Discovery Executor ya no existe.";
   if (error.status === 409) return "La identidad o la clave pública entraron en conflicto.";
+  if (error.status === 503) return "El canal SFTP no está disponible o no pudo verificarse de forma segura.";
   if (error.status === 400 || error.status === 422) return "Revisa el nombre, los ámbitos y la clave pública.";
   return `No fue posible ${action} el Discovery Executor.`;
 }
