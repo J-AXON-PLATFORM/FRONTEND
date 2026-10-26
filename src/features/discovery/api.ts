@@ -50,6 +50,22 @@ export type DiscoveryExecutorPage = {
   totalPages: number;
 };
 
+export type DiscoveryJobStatus =
+  | "PENDING" | "DISPATCHED" | "RUNNING" | "SUCCEEDED"
+  | "FAILED" | "EXPIRED" | "CANCELLED";
+
+export type DiscoveryJob = {
+  jobId: string;
+  executorId: string;
+  scopeId: string;
+  profile: "BASIC";
+  status: DiscoveryJobStatus;
+  createdAt: string;
+  expiresAt: string;
+  dispatchedAt: string | null;
+  version: number;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UTC_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
@@ -63,6 +79,12 @@ export class AuthorizedScopeContractError extends Error {
 export class DiscoveryExecutorContractError extends Error {
   constructor() {
     super("La respuesta del Discovery Executor no cumple el contrato esperado.");
+  }
+}
+
+export class DiscoveryJobContractError extends Error {
+  constructor() {
+    super("La respuesta del Discovery Job no cumple el contrato esperado.");
   }
 }
 
@@ -85,6 +107,35 @@ export async function listAllAuthorizedScopes(): Promise<AuthorizedScope[]> {
 export async function listDiscoveryExecutors(page: number): Promise<DiscoveryExecutorPage> {
   return parseDiscoveryExecutorPage(await read(await fetch(
     `${apiUrl}/discovery/executors?page=${page}&size=20`,
+    { credentials: "include" },
+  )));
+}
+
+export async function listAllDiscoveryExecutors(): Promise<DiscoveryExecutor[]> {
+  const first = await listDiscoveryExecutors(0);
+  const remaining = await Promise.all(Array.from(
+    { length: Math.max(0, first.totalPages - 1) },
+    (_, index) => listDiscoveryExecutors(index + 1),
+  ));
+  return [first, ...remaining].flatMap((page) => page.items);
+}
+
+export async function createDiscoveryJob(
+  executorId: string,
+  scopeId: string,
+  csrfToken: string,
+): Promise<DiscoveryJob> {
+  return parseDiscoveryJob(await read(await fetch(`${apiUrl}/discovery/jobs`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ executorId, scopeId }),
+  })));
+}
+
+export async function getDiscoveryJob(jobId: string): Promise<DiscoveryJob> {
+  return parseDiscoveryJob(await read(await fetch(
+    `${apiUrl}/discovery/jobs/${encodeURIComponent(jobId)}`,
     { credentials: "include" },
   )));
 }
@@ -301,12 +352,51 @@ export function parseDiscoveryExecutorPage(value: unknown): DiscoveryExecutorPag
   return { ...value, items: value.items.map(parseDiscoveryExecutor) } as DiscoveryExecutorPage;
 }
 
+export function parseDiscoveryJob(value: unknown): DiscoveryJob {
+  if (!isRecord(value)) throw new DiscoveryJobContractError();
+  const keys = new Set([
+    "jobId", "executorId", "scopeId", "profile", "status",
+    "createdAt", "expiresAt", "dispatchedAt", "version",
+  ]);
+  const statuses = new Set<unknown>([
+    "PENDING", "DISPATCHED", "RUNNING", "SUCCEEDED", "FAILED", "EXPIRED", "CANCELLED",
+  ]);
+  const createdAt = typeof value.createdAt === "string" ? Date.parse(value.createdAt) : Number.NaN;
+  const expiresAt = typeof value.expiresAt === "string" ? Date.parse(value.expiresAt) : Number.NaN;
+  const dispatchedAt = typeof value.dispatchedAt === "string" ? Date.parse(value.dispatchedAt) : Number.NaN;
+  const dispatched = value.dispatchedAt === null || isDateTime(value.dispatchedAt);
+  const stateValid = (value.status === "PENDING" && value.dispatchedAt === null && value.version === 0)
+    || (value.status === "DISPATCHED" && value.dispatchedAt !== null && value.version === 1)
+    || (value.status === "EXPIRED" && (
+      (value.version === 1 && value.dispatchedAt === null)
+      || (value.version === 2 && value.dispatchedAt !== null)
+    ))
+    || (["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"].includes(String(value.status))
+      && value.dispatchedAt !== null && Number.isSafeInteger(value.version) && (value.version as number) >= 2);
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.jobId !== "string" || !UUID_V4.test(value.jobId)
+      || typeof value.executorId !== "string" || !UUID_V4.test(value.executorId)
+      || typeof value.scopeId !== "string" || !UUID_V4.test(value.scopeId)
+      || value.profile !== "BASIC"
+      || !statuses.has(value.status)
+      || !isDateTime(value.createdAt)
+      || !isDateTime(value.expiresAt)
+      || expiresAt - createdAt !== 60 * 60 * 1000
+      || !dispatched
+      || (value.dispatchedAt !== null && (dispatchedAt < createdAt || dispatchedAt >= expiresAt))
+      || !stateValid) {
+    throw new DiscoveryJobContractError();
+  }
+  return value as DiscoveryJob;
+}
+
 async function read(response: Response): Promise<unknown> {
   if (!response.ok) {
     const problem = response.headers.get("content-type")?.includes("application/problem+json")
       ? await response.json() as { code: string; correlationId: string; detail?: string }
       : undefined;
-    throw new ApiError(response.status, problem);
+    throw new ApiError(response.status, problem, response.headers.get("location") ?? undefined);
   }
   return response.json();
 }

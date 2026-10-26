@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   AuthorizedScopeContractError,
   DiscoveryExecutorContractError,
+  DiscoveryJobContractError,
   parseAuthorizedScope,
   parseAuthorizedScopePage,
   parseDiscoveryExecutor,
   parseDiscoveryExecutorConnection,
   parseDiscoveryExecutorPage,
+  parseDiscoveryJob,
 } from "./api";
 
 const scope = {
@@ -37,6 +39,17 @@ const connection = {
   username: `discovery-executor-${executor.executorId}`,
   hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKg2VaOybk2P/sGQKcJkL7QWqLpzaxLfOjfPCsqSy5aL",
   hostKeyFingerprint: "SHA256:s5flX5trJMwyaxA/ME8Kyid8X3Q4XdOM487UdG7jOnA",
+};
+const job = {
+  jobId: "ea9dc882-57ce-4b40-a552-969760f33196",
+  executorId: executor.executorId,
+  scopeId: scope.scopeId,
+  profile: "BASIC",
+  status: "DISPATCHED",
+  createdAt: "2026-10-25T12:00:00Z",
+  expiresAt: "2026-10-25T13:00:00Z",
+  dispatchedAt: "2026-10-25T12:00:01Z",
+  version: 1,
 };
 
 describe("Discovery API parsers", () => {
@@ -114,5 +127,32 @@ describe("Discovery API parsers", () => {
       .toThrow(DiscoveryExecutorContractError);
     expect(() => parseDiscoveryExecutorConnection({ ...connection, hostKeyFingerprint: "SHA256:bad" }, executor.executorId))
       .toThrow(DiscoveryExecutorContractError);
+  });
+
+  it("accepts only closed and internally consistent Discovery Jobs", () => {
+    expect(parseDiscoveryJob(job)).toEqual(job);
+    expect(parseDiscoveryJob({
+      ...job, status: "PENDING", dispatchedAt: null, version: 0,
+    })).toMatchObject({ status: "PENDING", version: 0 });
+    expect(parseDiscoveryJob({
+      ...job, status: "EXPIRED", dispatchedAt: null, version: 1,
+    })).toMatchObject({ status: "EXPIRED", version: 1 });
+    expect(parseDiscoveryJob({ ...job, status: "EXPIRED", version: 2 }))
+      .toMatchObject({ status: "EXPIRED", version: 2 });
+    expect(() => parseDiscoveryJob({ ...job, secret: true })).toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, profile: "FULL" })).toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, status: "UNKNOWN" })).toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, status: "PENDING" })).toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, status: "EXPIRED", version: 1 }))
+      .toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({
+      ...job, status: "EXPIRED", dispatchedAt: null, version: 2,
+    })).toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, expiresAt: "2026-10-25T12:59:59Z" }))
+      .toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, dispatchedAt: "2026-10-25T11:59:59Z" }))
+      .toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, dispatchedAt: job.expiresAt }))
+      .toThrow(DiscoveryJobContractError);
   });
 });

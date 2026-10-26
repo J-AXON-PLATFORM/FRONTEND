@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const username = process.env.JAXON_E2E_USERNAME;
 const password = process.env.JAXON_E2E_PASSWORD;
@@ -163,17 +165,103 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     username: string;
     home_dir: string;
     permissions: Record<string, string[]>;
+    virtual_folders: Array<{ virtual_path: string; mapped_path: string }>;
     quota_size: number;
     quota_files: number;
   };
   expect(discoveryUser).toMatchObject({
     username: executorConnection.username,
     home_dir: `/srv/sftpgo/data/${executorConnection.username}`,
-    permissions: { "/": ["list"] },
+    permissions: { "/": ["list"], "/jobs": ["list", "download"] },
+    virtual_folders: [{
+      virtual_path: "/jobs",
+      mapped_path: `/srv/sftpgo/discovery-jobs/${executorConnection.username}-jobs`,
+    }],
     quota_size: 0,
     quota_files: 0,
   });
   expect(discoveryUser).not.toHaveProperty("password");
+
+  const jobWorkspace = page.getByRole("region", { name: "Discovery Jobs" });
+  await jobWorkspace.getByLabel("Executor activo").selectOption(createdExecutor.executorId);
+  await jobWorkspace.getByLabel("Ámbito activo asociado").selectOption(createdScope.scopeId);
+  const createJobResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/discovery/jobs")
+      && response.request().method() === "POST"
+  ));
+  await jobWorkspace.getByRole("button", { name: "Crear Discovery Job" }).click();
+  const createdJobResponse = await createJobResponse;
+  expect(createdJobResponse.status()).toBe(201);
+  const createdJob = await createdJobResponse.json() as {
+    jobId: string;
+    executorId: string;
+    scopeId: string;
+    profile: string;
+    status: string;
+    createdAt: string;
+    expiresAt: string;
+    dispatchedAt: string;
+    version: number;
+  };
+  expect(createdJob).toMatchObject({
+    executorId: createdExecutor.executorId,
+    scopeId: createdScope.scopeId,
+    profile: "BASIC",
+    status: "DISPATCHED",
+    version: 1,
+  });
+  expect(Date.parse(createdJob.expiresAt) - Date.parse(createdJob.createdAt)).toBe(60 * 60 * 1000);
+  await expect(jobWorkspace.getByRole("article", { name: "Estado del Discovery Job" }))
+    .toContainText("DISPATCHED · versión 1");
+  const refreshJobResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/discovery/jobs/${createdJob.jobId}`)
+      && response.request().method() === "GET"
+  ));
+  await jobWorkspace.getByRole("button", { name: "Actualizar job" }).click();
+  expect((await refreshJobResponse).status()).toBe(200);
+
+  const jobPath = `/srv/sftpgo/discovery-jobs/${executorConnection.username}-jobs/${createdJob.jobId}.json`;
+  const jobTempDir = mkdtempSync(join(tmpdir(), "jaxon-discovery-job-"));
+  const localJobPath = join(jobTempDir, `${createdJob.jobId}.json`);
+  try {
+    execFileSync("docker", ["cp", `${sftpGoContainer}:${jobPath}`, localJobPath]);
+    expect(spawnSync("docker", [
+      "cp", `${sftpGoContainer}:${jobPath}.part`, `${localJobPath}.part`,
+    ]).status).not.toBe(0);
+    const publishedJob = JSON.parse(readFileSync(localJobPath, "utf8")) as Record<string, unknown>;
+    expect(Object.keys(publishedJob).sort()).toEqual([
+      "createdAt", "executorId", "expiresAt", "jobId", "messageType",
+      "profile", "schemaVersion", "scopeCidr", "scopeId",
+    ]);
+    expect(publishedJob).toMatchObject({
+      schemaVersion: "1.0",
+      messageType: "DISCOVERY_JOB",
+      jobId: createdJob.jobId,
+      executorId: createdExecutor.executorId,
+      scopeId: createdScope.scopeId,
+      scopeCidr: "198.51.100.0/24",
+      profile: "BASIC",
+      createdAt: createdJob.createdAt,
+      expiresAt: createdJob.expiresAt,
+    });
+  } finally {
+    rmSync(jobTempDir, { recursive: true, force: true });
+  }
+  const persistedJob = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT j.status || ':' || j.version || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_CREATED'
+         AND e.resource_version = 0
+         AND e.payload = '{"status":"PENDING","profile":"BASIC"}'::jsonb) || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_DISPATCHED'
+         AND e.resource_version = 1
+         AND e.payload = '{"status":"DISPATCHED"}'::jsonb)
+      FROM discovery.discovery_jobs j WHERE j.job_id = '${createdJob.jobId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedJob).toBe("DISPATCHED:1:1:1");
 
   const disableScopeResponse = page.waitForResponse((response) => (
     response.url().endsWith(`/api/v1/discovery/scopes/${createdScope.scopeId}/status`)
@@ -300,7 +388,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       && response.status() === 200
   ));
   await page.getByLabel("UUID del activo").fill(assetId);
-  await page.getByRole("button", { name: "Consultar" }).click();
+  await page.getByRole("region", { name: "Activos" })
+    .getByRole("button", { name: "Consultar" }).click();
   const persistedCard = page.getByRole("article", { name: "Consulta por ID" });
   await expect(persistedCard.getByRole("heading", { name: assetName })).toBeVisible();
 
@@ -675,7 +764,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   expect(forbiddenTriage.body.code).toBe("ACCESS_DENIED");
 
   await page.getByLabel("UUID del activo").fill(assetId);
-  await page.getByRole("button", { name: "Consultar", exact: true }).click();
+  await page.getByRole("region", { name: "Activos" })
+    .getByRole("button", { name: "Consultar", exact: true }).click();
   await expect(page.getByRole("article", { name: "Consulta por ID" })).toContainText(assetName);
 
   const preRegisterResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/agents") && response.request().method() === "POST");
@@ -1073,7 +1163,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
 
   await page.reload();
   await page.getByLabel("UUID del activo").fill(assetId);
-  await page.getByRole("button", { name: "Consultar" }).click();
+  await page.getByRole("region", { name: "Activos" })
+    .getByRole("button", { name: "Consultar" }).click();
   await page.getByLabel("UUID del Agent").fill(agentId);
   await page.getByRole("button", { name: "Consultar Agent" }).click();
   await expect(page.getByRole("article", { name: "Estado del Agent" })).toContainText(initialized.publicKeyFingerprint);

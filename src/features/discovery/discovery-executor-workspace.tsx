@@ -346,6 +346,9 @@ async function refreshExecutors(
   await queryClient.invalidateQueries({
     queryKey: ["discovery", "executors", userId, "SYSTEM_ADMIN"],
   });
+  await queryClient.invalidateQueries({
+    queryKey: ["discovery", "job-executor-options", userId, "IT_OPERATOR"],
+  });
 }
 
 function executorError(error: Error | null, action: string) {

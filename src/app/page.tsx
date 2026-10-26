@@ -5,6 +5,7 @@ import { LogoutButton } from "@/features/auth/logout-button";
 import { UserAdministration } from "@/features/administration/user-administration";
 import { AuthorizedScopeWorkspace } from "@/features/discovery/authorized-scope-workspace";
 import { DiscoveryExecutorWorkspace } from "@/features/discovery/discovery-executor-workspace";
+import { DiscoveryJobWorkspace } from "@/features/discovery/discovery-job-workspace";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
 import { TicketWorkspace } from "@/features/support/ticket-workspace";
 import { TechnicianTicketWorkspace } from "@/features/support/technician-ticket-workspace";
@@ -57,6 +58,8 @@ export default function HomePage() {
         && <AuthorizedScopeWorkspace session={session.data} />}
       {session.data.roles.includes("SYSTEM_ADMIN")
         && <DiscoveryExecutorWorkspace session={session.data} />}
+      {session.data.roles.includes("IT_OPERATOR")
+        && <DiscoveryJobWorkspace session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <AssetWorkspace session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <TicketWorkspace session={session.data} />}
       {session.data.roles.includes("SUPPORT_TECHNICIAN") && <TechnicianTicketWorkspace session={session.data} />}

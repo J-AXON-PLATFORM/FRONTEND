@@ -16,6 +16,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly problem?: Problem,
+    readonly location?: string,
   ) {
     super(problem?.detail ?? "No se pudo completar la solicitud.");
   }

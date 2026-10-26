@@ -423,6 +423,13 @@ h1 {
 .scope-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; }
 .scope-pagination button { min-height: 2.7rem; color: #285f51; border: 1px solid #285f51; background: transparent; }
 .executor-workspace { border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.discovery-job-workspace { border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.discovery-job-grid { display: grid; grid-template-columns: minmax(17rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1rem; margin-top: 2rem; }
+.discovery-job-form, .discovery-job-result { display: grid; align-content: start; gap: 1rem; padding: 1.5rem; border: 1px solid var(--line); }
+.discovery-job-card { border-top: 3px solid var(--ink); padding-top: 1rem; }
+.discovery-job-card dl { display: grid; gap: 0.65rem; }
+.discovery-job-card dl div { display: grid; grid-template-columns: minmax(7rem, 0.35fr) 1fr; gap: 1rem; }
+.discovery-job-card dd { margin: 0; overflow-wrap: anywhere; }
 .executor-grid { display: grid; grid-template-columns: minmax(17rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1rem; margin-top: 2rem; }
 .executor-form, .executor-list, .executor-detail { border-top: 0.45rem solid #b44b2a; padding: 1.5rem; background: var(--panel); }
 .executor-form h3, .executor-list h3, .executor-detail h3 { margin-top: 0; }
@@ -487,6 +494,7 @@ h1 {
   .scope-card { align-items: stretch; flex-direction: column; }
   .scope-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .executor-grid { grid-template-columns: 1fr; }
+  .discovery-job-grid { grid-template-columns: 1fr; }
   .executor-card { align-items: stretch; flex-direction: column; }
   .executor-detail dl { grid-template-columns: 1fr; }
   .executor-detail dd { border-top: 0; padding-top: 0; }
