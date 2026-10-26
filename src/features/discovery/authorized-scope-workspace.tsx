@@ -141,6 +141,9 @@ async function refreshScopes(
   role: string,
 ) {
   await queryClient.invalidateQueries({ queryKey: ["discovery", "authorized-scopes", userId, role] });
+  await queryClient.invalidateQueries({
+    queryKey: ["discovery", "job-scope-options", userId, "IT_OPERATOR"],
+  });
   if (role === "SYSTEM_ADMIN") {
     await queryClient.invalidateQueries({
       queryKey: ["discovery", "executor-scope-options", userId, "SYSTEM_ADMIN"],

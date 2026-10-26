@@ -33,6 +33,7 @@ describe("HomePage", () => {
     expect(screen.getByText("IT OPERATOR")).toBeDefined();
     expect(screen.getByText("SYSTEM ADMIN")).toBeDefined();
     expect(screen.getByRole("heading", { name: "Discovery Executors" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
   });
 
   it("clears cached state and redirects when the session is absent", async () => {
@@ -80,11 +81,12 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "Usuarios humanos" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Activos" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Tickets" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Discovery Jobs" })).toBeNull();
     expect(await screen.findByRole("heading", { name: "Bandeja técnica" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeDefined();
   });
 
-  it("does not expose or request Discovery Executors for operator-only sessions", async () => {
+  it("shows Discovery Jobs but not executor administration to operator-only sessions", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       if (String(input).includes("/auth/me")) {
         return new Response(JSON.stringify({
@@ -111,7 +113,8 @@ describe("HomePage", () => {
     expect(await screen.findByRole("heading", { name: "Inventory.Operator" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Ámbitos autorizados" })).toBeDefined();
     expect(screen.queryByRole("heading", { name: "Discovery Executors" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/discovery/executors"))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/discovery/executors"))).toBe(true);
   });
 });
