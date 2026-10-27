@@ -63,7 +63,41 @@ export type DiscoveryJob = {
   createdAt: string;
   expiresAt: string;
   dispatchedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  failureCode: DiscoveryFailureCode | null;
+  summary: DiscoveryResultSummary | null;
   version: number;
+};
+
+export type DiscoveryFailureCode =
+  | "JOB_EXPIRED" | "SCOPE_TOO_LARGE" | "UNSUPPORTED_PLATFORM"
+  | "EXECUTION_INTERRUPTED" | "EXECUTION_ERROR";
+
+export type DiscoveryResultSummary = {
+  targetsConsidered: number;
+  targetsScanned: number;
+  observationsFound: number;
+};
+
+export type DiscoveredDevice = {
+  discoveredDeviceId: string;
+  jobId: string;
+  status: "UNREVIEWED";
+  ipAddress: string;
+  macAddress: string | null;
+  hostname: string | null;
+  evidence: Array<"ARP" | "ICMP" | "TCP">;
+  openTcpPorts: Array<22 | 53 | 80 | 443 | 445 | 3389>;
+  observedAt: string;
+};
+
+export type DiscoveredDevicePage = {
+  items: DiscoveredDevice[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
 };
 
 const apiUrl = process.env.NEXT_PUBLIC_JAXON_API_URL ?? "/api/v1";
@@ -85,6 +119,12 @@ export class DiscoveryExecutorContractError extends Error {
 export class DiscoveryJobContractError extends Error {
   constructor() {
     super("La respuesta del Discovery Job no cumple el contrato esperado.");
+  }
+}
+
+export class DiscoveredDeviceContractError extends Error {
+  constructor() {
+    super("La respuesta de dispositivos descubiertos no cumple el contrato esperado.");
   }
 }
 
@@ -138,6 +178,17 @@ export async function getDiscoveryJob(jobId: string): Promise<DiscoveryJob> {
     `${apiUrl}/discovery/jobs/${encodeURIComponent(jobId)}`,
     { credentials: "include" },
   )));
+}
+
+export async function listDiscoveredDevices(
+  jobId: string,
+  page: number,
+  size = 20,
+): Promise<DiscoveredDevicePage> {
+  return parseDiscoveredDevicePage(await read(await fetch(
+    `${apiUrl}/discovery-jobs/${encodeURIComponent(jobId)}/discovered-devices?page=${page}&size=${size}`,
+    { credentials: "include" },
+  )), jobId);
 }
 
 export async function createDiscoveryExecutor(
@@ -356,7 +407,8 @@ export function parseDiscoveryJob(value: unknown): DiscoveryJob {
   if (!isRecord(value)) throw new DiscoveryJobContractError();
   const keys = new Set([
     "jobId", "executorId", "scopeId", "profile", "status",
-    "createdAt", "expiresAt", "dispatchedAt", "version",
+    "createdAt", "expiresAt", "dispatchedAt", "startedAt", "completedAt",
+    "failureCode", "summary", "version",
   ]);
   const statuses = new Set<unknown>([
     "PENDING", "DISPATCHED", "RUNNING", "SUCCEEDED", "FAILED", "EXPIRED", "CANCELLED",
@@ -364,14 +416,33 @@ export function parseDiscoveryJob(value: unknown): DiscoveryJob {
   const createdAt = typeof value.createdAt === "string" ? Date.parse(value.createdAt) : Number.NaN;
   const expiresAt = typeof value.expiresAt === "string" ? Date.parse(value.expiresAt) : Number.NaN;
   const dispatchedAt = typeof value.dispatchedAt === "string" ? Date.parse(value.dispatchedAt) : Number.NaN;
+  const startedAt = typeof value.startedAt === "string" ? Date.parse(value.startedAt) : Number.NaN;
+  const completedAt = typeof value.completedAt === "string" ? Date.parse(value.completedAt) : Number.NaN;
   const dispatched = value.dispatchedAt === null || isDateTime(value.dispatchedAt);
-  const stateValid = (value.status === "PENDING" && value.dispatchedAt === null && value.version === 0)
-    || (value.status === "DISPATCHED" && value.dispatchedAt !== null && value.version === 1)
+  const started = value.startedAt === null || isDateTime(value.startedAt);
+  const completed = value.completedAt === null || isDateTime(value.completedAt);
+  const resultFieldsEmpty = value.startedAt === null && value.completedAt === null
+    && value.failureCode === null && value.summary === null;
+  const resultFieldsComplete = value.startedAt !== null && value.completedAt !== null
+    && parseDiscoveryResultSummary(value.summary);
+  const failures = new Set<unknown>([
+    "JOB_EXPIRED", "SCOPE_TOO_LARGE", "UNSUPPORTED_PLATFORM", "EXECUTION_INTERRUPTED", "EXECUTION_ERROR",
+  ]);
+  const failureValid = value.failureCode === null || failures.has(value.failureCode);
+  const summaryValid = value.summary === null || parseDiscoveryResultSummary(value.summary);
+  const stateValid = (value.status === "PENDING" && value.dispatchedAt === null
+      && resultFieldsEmpty && value.version === 0)
+    || (value.status === "DISPATCHED" && value.dispatchedAt !== null
+      && resultFieldsEmpty && value.version === 1)
     || (value.status === "EXPIRED" && (
-      (value.version === 1 && value.dispatchedAt === null)
-      || (value.version === 2 && value.dispatchedAt !== null)
+      ((value.version === 1 && value.dispatchedAt === null)
+        || (value.version === 2 && value.dispatchedAt !== null)) && resultFieldsEmpty
     ))
-    || (["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"].includes(String(value.status))
+    || (value.status === "SUCCEEDED" && value.dispatchedAt !== null && value.failureCode === null
+      && resultFieldsComplete && value.version === 2)
+    || (value.status === "FAILED" && value.dispatchedAt !== null && failures.has(value.failureCode)
+      && resultFieldsComplete && value.version === 2)
+    || (["RUNNING", "CANCELLED"].includes(String(value.status))
       && value.dispatchedAt !== null && Number.isSafeInteger(value.version) && (value.version as number) >= 2);
   if (Object.keys(value).length !== keys.size
       || Object.keys(value).some((key) => !keys.has(key))
@@ -382,13 +453,74 @@ export function parseDiscoveryJob(value: unknown): DiscoveryJob {
       || !statuses.has(value.status)
       || !isDateTime(value.createdAt)
       || !isDateTime(value.expiresAt)
-      || expiresAt - createdAt !== 60 * 60 * 1000
-      || !dispatched
-      || (value.dispatchedAt !== null && (dispatchedAt < createdAt || dispatchedAt >= expiresAt))
-      || !stateValid) {
+       || expiresAt - createdAt !== 60 * 60 * 1000
+       || !dispatched
+       || !started
+       || !completed
+       || !failureValid
+       || !summaryValid
+       || (value.dispatchedAt !== null && (dispatchedAt < createdAt || dispatchedAt >= expiresAt))
+       || (value.startedAt !== null && value.dispatchedAt !== null && startedAt < dispatchedAt)
+       || (value.completedAt !== null && value.startedAt !== null && completedAt < startedAt)
+       || (value.completedAt !== null && completedAt > expiresAt)
+       || !stateValid) {
     throw new DiscoveryJobContractError();
   }
   return value as DiscoveryJob;
+}
+
+export function parseDiscoveredDevice(value: unknown, expectedJobId?: string): DiscoveredDevice {
+  if (!isRecord(value)) throw new DiscoveredDeviceContractError();
+  const keys = new Set([
+    "discoveredDeviceId", "jobId", "status", "ipAddress", "macAddress", "hostname",
+    "evidence", "openTcpPorts", "observedAt",
+  ]);
+  const evidence = value.evidence;
+  const ports = value.openTcpPorts;
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.discoveredDeviceId !== "string" || !UUID_V4.test(value.discoveredDeviceId)
+      || typeof value.jobId !== "string" || !UUID_V4.test(value.jobId)
+      || (expectedJobId !== undefined && value.jobId !== expectedJobId)
+      || value.status !== "UNREVIEWED"
+      || typeof value.ipAddress !== "string" || !isIpAddress(value.ipAddress)
+      || (value.macAddress !== null && (
+        typeof value.macAddress !== "string" || !/^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/.test(value.macAddress)
+      ))
+      || (value.hostname !== null && (
+        typeof value.hostname !== "string" || value.hostname.length < 1 || value.hostname.length > 253
+      ))
+      || !Array.isArray(evidence) || evidence.length < 1 || evidence.length > 3
+      || !evidence.every((item) => item === "ARP" || item === "ICMP" || item === "TCP")
+      || new Set(evidence).size !== evidence.length
+      || !Array.isArray(ports) || ports.length > 6
+      || !ports.every((port) => typeof port === "number" && [22, 53, 80, 443, 445, 3389].includes(port))
+      || new Set(ports).size !== ports.length
+      || !isDateTime(value.observedAt)) {
+    throw new DiscoveredDeviceContractError();
+  }
+  return value as DiscoveredDevice;
+}
+
+export function parseDiscoveredDevicePage(value: unknown, expectedJobId?: string): DiscoveredDevicePage {
+  if (!isRecord(value)) throw new DiscoveredDeviceContractError();
+  const keys = new Set(["items", "page", "size", "totalElements", "totalPages"]);
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || !Array.isArray(value.items)
+      || value.items.length > 50
+      || !value.items.every((item) => safelyParsesDevice(item, expectedJobId))
+      || !isNonNegativeInteger(value.page)
+      || !Number.isSafeInteger(value.size) || (value.size as number) < 1 || (value.size as number) > 50
+      || value.items.length > (value.size as number)
+      || !isNonNegativeInteger(value.totalElements)
+      || !isNonNegativeInteger(value.totalPages)) {
+    throw new DiscoveredDeviceContractError();
+  }
+  return {
+    ...value,
+    items: value.items.map((item) => parseDiscoveredDevice(item, expectedJobId)),
+  } as DiscoveredDevicePage;
 }
 
 async function read(response: Response): Promise<unknown> {
@@ -419,6 +551,26 @@ function safelyParsesExecutor(value: unknown) {
   }
 }
 
+function safelyParsesDevice(value: unknown, expectedJobId?: string) {
+  try {
+    parseDiscoveredDevice(value, expectedJobId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseDiscoveryResultSummary(value: unknown): value is DiscoveryResultSummary {
+  if (!isRecord(value)) return false;
+  const keys = new Set(["targetsConsidered", "targetsScanned", "observationsFound"]);
+  return Object.keys(value).length === keys.size
+    && Object.keys(value).every((key) => keys.has(key))
+    && Number.isInteger(value.targetsConsidered) && (value.targetsConsidered as number) >= 0
+    && (value.targetsConsidered as number) <= 340282366920938463463374607431768211456
+    && isNonNegativeInteger(value.targetsScanned) && (value.targetsScanned as number) <= 4096
+    && isNonNegativeInteger(value.observationsFound) && (value.observationsFound as number) <= 4096;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -437,6 +589,22 @@ function isDateTime(value: unknown): value is string {
     && hour <= 23
     && minute <= 59
     && second <= 59;
+}
+
+function isIpAddress(value: string): boolean {
+  const octets = value.split(".");
+  if (octets.length === 4) {
+    return octets.every((octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+  }
+  if (!/^[0-9a-f:]+$/i.test(value)) return false;
+  const compressed = value.split("::");
+  if (compressed.length > 2) return false;
+  const left = compressed[0] ? compressed[0].split(":") : [];
+  const right = compressed.length === 2 && compressed[1] ? compressed[1].split(":") : [];
+  if (![...left, ...right].every((group) => /^[0-9a-f]{1,4}$/i.test(group))) return false;
+  return compressed.length === 1
+    ? left.length === 8
+    : left.length + right.length < 8;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

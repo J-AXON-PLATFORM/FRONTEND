@@ -11,6 +11,7 @@ backend_container="${owner}-backend"
 mailbox_volume="${owner}-mailboxes"
 tasks_volume="${owner}-tasks"
 discovery_jobs_volume="${owner}-discovery-jobs"
+discovery_results_volume="${owner}-discovery-results"
 database_image="jaxon-postgres-pgvector-test:${owner}"
 backend_image="jaxon-backend:${owner}"
 backend_port="${JAXON_E2E_BACKEND_PORT:-$((18000 + RANDOM % 1000))}"
@@ -30,6 +31,7 @@ cleanup() {
   docker volume rm "${mailbox_volume}" >/dev/null 2>&1 || true
   docker volume rm "${tasks_volume}" >/dev/null 2>&1 || true
   docker volume rm "${discovery_jobs_volume}" >/dev/null 2>&1 || true
+  docker volume rm "${discovery_results_volume}" >/dev/null 2>&1 || true
   docker image rm "${database_image}" >/dev/null 2>&1 || true
   docker image rm "${backend_image}" >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
@@ -61,6 +63,7 @@ docker run --detach --rm --name "${database_container}" \
 docker volume create --label "com.jaxon.resource-owner=${owner}" "${mailbox_volume}" >/dev/null
 docker volume create --label "com.jaxon.resource-owner=${owner}" "${tasks_volume}" >/dev/null
 docker volume create --label "com.jaxon.resource-owner=${owner}" "${discovery_jobs_volume}" >/dev/null
+docker volume create --label "com.jaxon.resource-owner=${owner}" "${discovery_results_volume}" >/dev/null
 docker run --detach --rm --name "${sftpgo_container}" \
   --label "com.jaxon.resource-owner=${owner}" \
   --publish 127.0.0.1::2022 \
@@ -68,6 +71,7 @@ docker run --detach --rm --name "${sftpgo_container}" \
   --mount "source=${mailbox_volume},target=/srv/sftpgo/data" \
   --mount "source=${tasks_volume},target=/srv/sftpgo/tasks" \
   --mount "source=${discovery_jobs_volume},target=/srv/sftpgo/discovery-jobs" \
+  --mount "source=${discovery_results_volume},target=/srv/sftpgo/discovery-results" \
   --env SFTPGO_COMMON__UMASK=0007 \
   --env SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=true \
   --env SFTPGO_DEFAULT_ADMIN_USERNAME=jaxon-e2e-provisioner \
@@ -109,6 +113,8 @@ export JAXON_COLLECTOR_TASK_PUBLICATION_ROOT=/srv/sftpgo/tasks
 export JAXON_COLLECTOR_TASK_RECONCILIATION_INTERVAL=1s
 export JAXON_DISCOVERY_JOB_PUBLICATION_ROOT=/srv/sftpgo/discovery-jobs
 export JAXON_DISCOVERY_JOB_RECONCILIATION_INTERVAL=1s
+export JAXON_DISCOVERY_RESULT_MAILBOX_ROOT=/srv/sftpgo/discovery-results
+export JAXON_DISCOVERY_RESULT_STABILITY_AGE=0s
 export JAXON_COLLECTOR_RESULT_STABILITY_AGE=0s
 export JAXON_COLLECTOR_RECONCILIATION_INTERVAL=1s
 export JAXON_COLLECTOR_SNAPSHOT_STABILITY_AGE=0s
@@ -121,6 +127,7 @@ docker run --detach --name "${backend_container}" \
   --mount "source=${mailbox_volume},target=/srv/sftpgo/data,readonly" \
   --mount "source=${tasks_volume},target=/srv/sftpgo/tasks" \
   --mount "source=${discovery_jobs_volume},target=/srv/sftpgo/discovery-jobs" \
+  --mount "source=${discovery_results_volume},target=/srv/sftpgo/discovery-results" \
   --env JAXON_DB_URL \
   --env JAXON_DB_USERNAME \
   --env JAXON_DB_PASSWORD \
@@ -140,6 +147,8 @@ docker run --detach --name "${backend_container}" \
   --env JAXON_COLLECTOR_TASK_RECONCILIATION_INTERVAL \
   --env JAXON_DISCOVERY_JOB_PUBLICATION_ROOT \
   --env JAXON_DISCOVERY_JOB_RECONCILIATION_INTERVAL \
+  --env JAXON_DISCOVERY_RESULT_MAILBOX_ROOT \
+  --env JAXON_DISCOVERY_RESULT_STABILITY_AGE \
   --env JAXON_COLLECTOR_RESULT_STABILITY_AGE \
   --env JAXON_COLLECTOR_RECONCILIATION_INTERVAL \
   --env JAXON_COLLECTOR_SNAPSHOT_STABILITY_AGE \

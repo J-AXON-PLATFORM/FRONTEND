@@ -7,12 +7,15 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   createDiscoveryJob,
   AuthorizedScopeContractError,
+  DiscoveredDeviceContractError,
   DiscoveryJobContractError,
   DiscoveryExecutorContractError,
   getDiscoveryJob,
+  listDiscoveredDevices,
   listAllAuthorizedScopes,
   listAllDiscoveryExecutors,
   type DiscoveryJob,
+  type DiscoveredDevice,
 } from "./api";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,10 +29,14 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
   const [lookupValue, setLookupValue] = useState("");
   const [lookupId, setLookupId] = useState("");
   const [createdJob, setCreatedJob] = useState<DiscoveryJob>();
+  const [devicePage, setDevicePage] = useState(0);
   const [localError, setLocalError] = useState<string | null>(null);
   const scopeKey = ["discovery", "job-scope-options", session.userId, "IT_OPERATOR"] as const;
   const executorKey = ["discovery", "job-executor-options", session.userId, "IT_OPERATOR"] as const;
   const detailKey = ["discovery", "jobs", session.userId, "IT_OPERATOR", "detail", lookupId] as const;
+  const devicesKey = [
+    "discovery", "jobs", session.userId, "IT_OPERATOR", lookupId, "devices", devicePage,
+  ] as const;
 
   const scopes = useQuery({
     queryKey: scopeKey,
@@ -50,6 +57,14 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
     staleTime: Number.POSITIVE_INFINITY,
     retry: retryQuery,
   });
+  const visibleJob = lookup.data ?? (createdJob?.jobId === lookupId ? createdJob : undefined);
+  const devices = useQuery({
+    queryKey: devicesKey,
+    queryFn: () => listDiscoveredDevices(lookupId, devicePage),
+    enabled: canOperate && UUID_V4.test(lookupId) && visibleJob?.status === "SUCCEEDED",
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: retryQuery,
+  });
   const creation = useMutation({
     mutationFn: () => createDiscoveryJob(executorId, scopeId, session.csrfToken),
     retry: false,
@@ -57,6 +72,7 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
       setCreatedJob(job);
       setLookupValue(job.jobId);
       setLookupId(job.jobId);
+      setDevicePage(0);
       setLocalError(null);
       queryClient.setQueryData(
         ["discovery", "jobs", session.userId, "IT_OPERATOR", "detail", job.jobId],
@@ -73,7 +89,7 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
   });
   const pendingId = pendingJobId(creation.error);
 
-  const authenticationError = [scopes.error, executors.error, lookup.error, creation.error]
+  const authenticationError = [scopes.error, executors.error, lookup.error, devices.error, creation.error]
     .some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
     if (authenticationError) {
@@ -117,10 +133,10 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
 
   function submitLookup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setDevicePage(0);
     setLookupId(lookupValue.trim());
   }
 
-  const visibleJob = lookup.data ?? (createdJob?.jobId === lookupId ? createdJob : undefined);
   return (
     <section className="discovery-job-workspace" aria-labelledby="discovery-job-title">
       <header className="workspace-heading">
@@ -190,6 +206,15 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
               {lookup.isFetching ? "Actualizando..." : "Actualizar job"}
             </button>
           )}
+          {visibleJob?.status === "SUCCEEDED" && (
+            <DiscoveredDevices
+              data={devices.data}
+              error={devices.error}
+              fetching={devices.isFetching}
+              page={devicePage}
+              onPageChange={setDevicePage}
+            />
+          )}
         </div>
       </div>
     </section>
@@ -208,17 +233,88 @@ function JobCard({ job }: Readonly<{ job: DiscoveryJob }>) {
         <div><dt>Creado</dt><dd>{job.createdAt}</dd></div>
         <div><dt>Expira</dt><dd>{job.expiresAt}</dd></div>
         <div><dt>Despachado</dt><dd>{job.dispatchedAt ?? "Pendiente"}</dd></div>
+        <div><dt>Iniciado</dt><dd>{job.startedAt ?? "Sin evidencia terminal"}</dd></div>
+        <div><dt>Completado</dt><dd>{job.completedAt ?? "Sin evidencia terminal"}</dd></div>
+        <div><dt>Fallo</dt><dd>{job.failureCode ?? "Ninguno"}</dd></div>
+        {job.summary && (
+          <>
+            <div><dt>Objetivos considerados</dt><dd>{job.summary.targetsConsidered}</dd></div>
+            <div><dt>Objetivos escaneados</dt><dd>{job.summary.targetsScanned}</dd></div>
+            <div><dt>Observaciones</dt><dd>{job.summary.observationsFound}</dd></div>
+          </>
+        )}
       </dl>
     </article>
+  );
+}
+
+function DiscoveredDevices({ data, error, fetching, page, onPageChange }: Readonly<{
+  data: { items: DiscoveredDevice[]; page: number; totalElements: number; totalPages: number } | undefined;
+  error: Error | null;
+  fetching: boolean;
+  page: number;
+  onPageChange: (page: number) => void;
+}>) {
+  return (
+    <section className="discovered-devices" aria-labelledby="discovered-devices-title">
+      <header>
+        <div>
+          <p className="sequence">Observaciones del resultado</p>
+          <h3 id="discovered-devices-title">Dispositivos descubiertos</h3>
+        </div>
+        {data && <span>{data.totalElements} en total</span>}
+      </header>
+      {fetching && !data && <p aria-live="polite">Cargando dispositivos...</p>}
+      {error && <p className="form-error" role="alert">{deviceError(error)}</p>}
+      {data?.items.length === 0 && <p>No se observaron dispositivos en este Job.</p>}
+      {data && data.items.length > 0 && (
+        <ul className="discovered-device-list">
+          {data.items.map((device) => (
+            <li key={device.discoveredDeviceId}>
+              <div className="discovered-device-title">
+                <div>
+                  <span>{device.status}</span>
+                  <h4>{device.hostname ?? device.ipAddress}</h4>
+                </div>
+                <strong>{device.ipAddress}</strong>
+              </div>
+              <dl>
+                <div><dt>MAC</dt><dd>{device.macAddress ?? "No observada"}</dd></div>
+                <div><dt>Evidencia</dt><dd>{device.evidence.join(" · ")}</dd></div>
+                <div><dt>Puertos TCP</dt><dd>{device.openTcpPorts.join(", ") || "Ninguno observado"}</dd></div>
+                <div><dt>Observado</dt><dd>{device.observedAt}</dd></div>
+              </dl>
+            </li>
+          ))}
+        </ul>
+      )}
+      {data && data.totalPages > 1 && (
+        <nav className="device-pagination" aria-label="Paginación de dispositivos descubiertos">
+          <button type="button" disabled={page === 0 || fetching}
+            onClick={() => onPageChange(page - 1)}>Anterior</button>
+          <span>Página {data.page + 1} de {data.totalPages}</span>
+          <button type="button" disabled={page + 1 >= data.totalPages || fetching}
+            onClick={() => onPageChange(page + 1)}>Siguiente</button>
+        </nav>
+      )}
+    </section>
   );
 }
 
 function retryQuery(count: number, error: Error) {
   return count < 1
     && !(error instanceof DiscoveryJobContractError)
+    && !(error instanceof DiscoveredDeviceContractError)
     && !(error instanceof AuthorizedScopeContractError)
     && !(error instanceof DiscoveryExecutorContractError)
     && (!(error instanceof ApiError) || error.status >= 500);
+}
+
+function deviceError(error: Error | null) {
+  if (error instanceof ApiError && error.status === 403) return "La sesión no autoriza consultar estos dispositivos.";
+  if (error instanceof ApiError && error.status === 404) return "El Discovery Job ya no está disponible.";
+  if (error instanceof ApiError && error.status === 422) return "La página solicitada no es válida.";
+  return "No fue posible consultar los dispositivos descubiertos.";
 }
 
 function pendingJobId(error: Error | null) {

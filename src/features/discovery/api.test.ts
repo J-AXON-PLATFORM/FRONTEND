@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   AuthorizedScopeContractError,
+  DiscoveredDeviceContractError,
   DiscoveryExecutorContractError,
   DiscoveryJobContractError,
   parseAuthorizedScope,
   parseAuthorizedScopePage,
+  parseDiscoveredDevice,
+  parseDiscoveredDevicePage,
   parseDiscoveryExecutor,
   parseDiscoveryExecutorConnection,
   parseDiscoveryExecutorPage,
@@ -49,7 +52,22 @@ const job = {
   createdAt: "2026-10-25T12:00:00Z",
   expiresAt: "2026-10-25T13:00:00Z",
   dispatchedAt: "2026-10-25T12:00:01Z",
+  startedAt: null,
+  completedAt: null,
+  failureCode: null,
+  summary: null,
   version: 1,
+};
+const device = {
+  discoveredDeviceId: "33cdd354-5b5d-42e1-9647-4420f407a97f",
+  jobId: job.jobId,
+  status: "UNREVIEWED",
+  ipAddress: "192.0.2.10",
+  macAddress: "02:00:5e:10:00:01",
+  hostname: "host.example.internal",
+  evidence: ["ARP", "TCP"],
+  openTcpPorts: [22, 443],
+  observedAt: "2026-10-25T12:01:00Z",
 };
 
 describe("Discovery API parsers", () => {
@@ -139,6 +157,23 @@ describe("Discovery API parsers", () => {
     })).toMatchObject({ status: "EXPIRED", version: 1 });
     expect(parseDiscoveryJob({ ...job, status: "EXPIRED", version: 2 }))
       .toMatchObject({ status: "EXPIRED", version: 2 });
+    expect(parseDiscoveryJob({
+      ...job,
+      status: "SUCCEEDED",
+      startedAt: "2026-10-25T12:01:00Z",
+      completedAt: "2026-10-25T12:02:00Z",
+      summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 1 },
+      version: 2,
+    })).toMatchObject({ status: "SUCCEEDED", version: 2 });
+    expect(parseDiscoveryJob({
+      ...job,
+      status: "FAILED",
+      startedAt: "2026-10-25T12:01:00Z",
+      completedAt: "2026-10-25T12:02:00Z",
+      failureCode: "EXECUTION_ERROR",
+      summary: { targetsConsidered: 256, targetsScanned: 0, observationsFound: 0 },
+      version: 2,
+    })).toMatchObject({ status: "FAILED", failureCode: "EXECUTION_ERROR" });
     expect(() => parseDiscoveryJob({ ...job, secret: true })).toThrow(DiscoveryJobContractError);
     expect(() => parseDiscoveryJob({ ...job, profile: "FULL" })).toThrow(DiscoveryJobContractError);
     expect(() => parseDiscoveryJob({ ...job, status: "UNKNOWN" })).toThrow(DiscoveryJobContractError);
@@ -154,5 +189,43 @@ describe("Discovery API parsers", () => {
       .toThrow(DiscoveryJobContractError);
     expect(() => parseDiscoveryJob({ ...job, dispatchedAt: job.expiresAt }))
       .toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({
+      ...job, status: "SUCCEEDED", startedAt: job.dispatchedAt, completedAt: job.dispatchedAt, version: 2,
+    })).toThrow(DiscoveryJobContractError);
+    expect(() => parseDiscoveryJob({ ...job, summary: { targetsScanned: 1 } }))
+      .toThrow(DiscoveryJobContractError);
+  });
+
+  it("accepts only closed discovered-device pages for the requested job", () => {
+    expect(parseDiscoveredDevice(device, job.jobId)).toEqual(device);
+    expect(parseDiscoveredDevice({
+      ...device,
+      ipAddress: "2001:db8::10",
+      macAddress: null,
+      hostname: null,
+      evidence: ["ICMP"],
+      openTcpPorts: [],
+    }, job.jobId)).toMatchObject({ ipAddress: "2001:db8::10" });
+    expect(parseDiscoveredDevicePage({
+      items: [device], page: 0, size: 20, totalElements: 1, totalPages: 1,
+    }, job.jobId).items).toEqual([device]);
+
+    expect(() => parseDiscoveredDevice({ ...device, secret: true }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, jobId: scope.scopeId }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, status: "INCORPORATED" }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, ipAddress: "192.0.2.999" }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, evidence: ["TCP", "TCP"] }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, openTcpPorts: [23] }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, openTcpPorts: ["22"] }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevicePage({
+      items: [device], page: 0, size: 51, totalElements: 1, totalPages: 1,
+    }, job.jobId)).toThrow(DiscoveredDeviceContractError);
   });
 });
