@@ -430,6 +430,20 @@ h1 {
 .discovery-job-card dl { display: grid; gap: 0.65rem; }
 .discovery-job-card dl div { display: grid; grid-template-columns: minmax(7rem, 0.35fr) 1fr; gap: 1rem; }
 .discovery-job-card dd { margin: 0; overflow-wrap: anywhere; }
+.discovered-devices { display: grid; gap: 1rem; border-top: 3px solid #285f51; margin-top: 0.5rem; padding-top: 1rem; }
+.discovered-devices > header, .discovered-device-title { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.discovered-devices h3, .discovered-device-title h4 { margin: 0.25rem 0 0; }
+.discovered-devices > header span, .discovered-device-title span { color: var(--muted); font-size: 0.75rem; font-weight: 800; text-transform: uppercase; }
+.discovered-device-list { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
+.discovered-device-list > li { border-left: 0.35rem solid #285f51; padding: 1rem; background: var(--panel); }
+.discovered-device-title strong { overflow-wrap: anywhere; }
+.discovered-device-list dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0; }
+.discovered-device-list dl div { min-width: 0; }
+.discovered-device-list dt { color: var(--muted); font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }
+.discovered-device-list dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
+.device-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.device-pagination button { min-height: 2.7rem; border: 1px solid #285f51; padding: 0.65rem 1rem; color: #285f51; background: transparent; font-weight: 800; cursor: pointer; }
+.device-pagination button:disabled { cursor: not-allowed; opacity: 0.5; }
 .executor-grid { display: grid; grid-template-columns: minmax(17rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1rem; margin-top: 2rem; }
 .executor-form, .executor-list, .executor-detail { border-top: 0.45rem solid #b44b2a; padding: 1.5rem; background: var(--panel); }
 .executor-form h3, .executor-list h3, .executor-detail h3 { margin-top: 0; }
@@ -495,6 +509,9 @@ h1 {
   .scope-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .executor-grid { grid-template-columns: 1fr; }
   .discovery-job-grid { grid-template-columns: 1fr; }
+  .discovered-devices > header, .discovered-device-title { display: grid; }
+  .discovered-device-list dl { grid-template-columns: 1fr; }
+  .device-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .executor-card { align-items: stretch; flex-direction: column; }
   .executor-detail dl { grid-template-columns: 1fr; }
   .executor-detail dd { border-top: 0; padding-top: 0; }

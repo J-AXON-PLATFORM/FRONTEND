@@ -165,21 +165,38 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     username: string;
     home_dir: string;
     permissions: Record<string, string[]>;
-    virtual_folders: Array<{ virtual_path: string; mapped_path: string }>;
+    virtual_folders: Array<{
+      virtual_path: string;
+      mapped_path: string;
+      quota_size: number;
+      quota_files: number;
+    }>;
     quota_size: number;
     quota_files: number;
   };
   expect(discoveryUser).toMatchObject({
     username: executorConnection.username,
     home_dir: `/srv/sftpgo/data/${executorConnection.username}`,
-    permissions: { "/": ["list"], "/jobs": ["list", "download"] },
-    virtual_folders: [{
-      virtual_path: "/jobs",
-      mapped_path: `/srv/sftpgo/discovery-jobs/${executorConnection.username}-jobs`,
-    }],
+    permissions: {
+      "/": ["list"],
+      "/jobs": ["list", "download"],
+      "/results": expect.arrayContaining(["list", "download", "upload", "rename_files"]),
+    },
     quota_size: 0,
     quota_files: 0,
   });
+  expect(discoveryUser.virtual_folders).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      virtual_path: "/jobs",
+      mapped_path: `/srv/sftpgo/discovery-jobs/${executorConnection.username}-jobs`,
+    }),
+    expect.objectContaining({
+      virtual_path: "/results",
+      mapped_path: `/srv/sftpgo/discovery-results/${executorConnection.username}-results`,
+      quota_size: 15 * 1024 * 1024,
+      quota_files: 3,
+    }),
+  ]));
   expect(discoveryUser).not.toHaveProperty("password");
 
   const jobWorkspace = page.getByRole("region", { name: "Discovery Jobs" });
@@ -262,6 +279,84 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       FROM discovery.discovery_jobs j WHERE j.job_id = '${createdJob.jobId}'`,
   ], { encoding: "utf8" }).trim();
   expect(persistedJob).toBe("DISPATCHED:1:1:1");
+
+  const resultTempDir = mkdtempSync(join(tmpdir(), "jaxon-discovery-result-"));
+  try {
+    const resultPath = join(resultTempDir, `${createdJob.jobId}.json`);
+    const batchPath = join(resultTempDir, "sftp.batch");
+    const knownHostsPath = join(resultTempDir, "known_hosts");
+    const completedAt = createdJob.dispatchedAt;
+    writeFileSync(resultPath, JSON.stringify({
+      schemaVersion: "1.0",
+      messageType: "DISCOVERY_RESULT",
+      resultId: crypto.randomUUID(),
+      jobId: createdJob.jobId,
+      executorId: createdExecutor.executorId,
+      scopeId: createdScope.scopeId,
+      profile: "BASIC",
+      startedAt: createdJob.dispatchedAt,
+      completedAt,
+      status: "SUCCEEDED",
+      failureCode: null,
+      summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 1 },
+      observations: [{
+        ipAddress: "198.51.100.10",
+        macAddress: "02:00:5e:10:00:01",
+        hostname: "e2e-discovered.example.internal",
+        evidence: ["ARP", "TCP"],
+        openTcpPorts: [22, 443],
+      }],
+    }));
+    writeFileSync(batchPath, [
+      `put ${resultPath} /results/${createdJob.jobId}.json.part`,
+      `rename /results/${createdJob.jobId}.json.part /results/${createdJob.jobId}.json`,
+      "",
+    ].join("\n"));
+    writeFileSync(
+      knownHostsPath,
+      `[${executorConnection.host}]:${executorConnection.port} ${executorConnection.hostKey}\n`,
+    );
+    chmodSync(knownHostsPath, 0o600);
+    execFileSync("sftp", [
+      "-P", String(executorConnection.port),
+      "-i", join(executorStateDir, "executor_ed25519"),
+      "-o", `UserKnownHostsFile=${knownHostsPath}`,
+      "-o", "StrictHostKeyChecking=yes",
+      "-b", batchPath,
+      `${executorConnection.username}@${executorConnection.host}`,
+    ]);
+  } finally {
+    rmSync(resultTempDir, { recursive: true, force: true });
+  }
+
+  await expect.poll(async () => {
+    const responsePromise = page.waitForResponse((response) => (
+      response.url().endsWith(`/api/v1/discovery/jobs/${createdJob.jobId}`)
+        && response.request().method() === "GET"
+    ));
+    await jobWorkspace.getByRole("button", { name: "Actualizar job" }).click();
+    const response = await responsePromise;
+    return (await response.json() as { status: string }).status;
+  }, { timeout: 15_000 }).toBe("SUCCEEDED");
+  await expect(jobWorkspace.getByRole("article", { name: "Estado del Discovery Job" }))
+    .toContainText("SUCCEEDED · versión 2");
+  const discoveredDevices = jobWorkspace.getByRole("region", { name: "Dispositivos descubiertos" });
+  await expect(discoveredDevices.getByRole("heading", { name: "e2e-discovered.example.internal" }))
+    .toBeVisible();
+  await expect(discoveredDevices).toContainText("198.51.100.10");
+  await expect(discoveredDevices).toContainText("22, 443");
+  const persistedDiscoveryResult = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT j.status || ':' || j.version || ':' ||
+      (SELECT count(*) FROM discovery.discovered_devices d
+       WHERE d.job_id = j.job_id AND d.status = 'UNREVIEWED') || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_COMPLETED'
+         AND e.resource_version = 2)
+      FROM discovery.discovery_jobs j WHERE j.job_id = '${createdJob.jobId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedDiscoveryResult).toBe("SUCCEEDED:2:1:1");
 
   const disableScopeResponse = page.waitForResponse((response) => (
     response.url().endsWith(`/api/v1/discovery/scopes/${createdScope.scopeId}/status`)

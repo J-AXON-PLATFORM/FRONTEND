@@ -45,7 +45,30 @@ const job = {
   createdAt: "2026-10-25T12:00:00Z",
   expiresAt: "2026-10-25T13:00:00Z",
   dispatchedAt: "2026-10-25T12:00:01Z",
+  startedAt: null,
+  completedAt: null,
+  failureCode: null,
+  summary: null,
   version: 1,
+};
+const succeededJob = {
+  ...job,
+  status: "SUCCEEDED",
+  startedAt: "2026-10-25T12:01:00Z",
+  completedAt: "2026-10-25T12:02:00Z",
+  summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 1 },
+  version: 2,
+};
+const device = {
+  discoveredDeviceId: "33cdd354-5b5d-42e1-9647-4420f407a97f",
+  jobId: job.jobId,
+  status: "UNREVIEWED",
+  ipAddress: "192.0.2.10",
+  macAddress: "02:00:5e:10:00:01",
+  hostname: "host.example.internal",
+  evidence: ["ARP", "TCP"],
+  openTcpPorts: [22, 443],
+  observedAt: "2026-10-25T12:02:00Z",
 };
 
 afterEach(() => {
@@ -142,6 +165,32 @@ describe("DiscoveryJobWorkspace", () => {
 
     expect(await screen.findByRole("article", { name: "Estado del Discovery Job" })).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith(job.jobId))).toHaveLength(1);
+  });
+
+  it("lists observed devices only for a successful job", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        return page([device], 20);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+
+    expect(await screen.findByRole("heading", { name: "host.example.internal" })).toBeTruthy();
+    const devices = screen.getByRole("region", { name: "Dispositivos descubiertos" });
+    expect(devices.textContent).toContain("UNREVIEWED");
+    expect(devices.textContent).toContain("192.0.2.10");
+    expect(devices.textContent).toContain("22, 443");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("discovered-devices?page=0&size=20")))
+      .toBe(true);
   });
 
   it("does not request data for users without IT_OPERATOR", () => {
