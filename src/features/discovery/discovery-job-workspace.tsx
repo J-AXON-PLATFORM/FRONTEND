@@ -12,6 +12,7 @@ import {
   DiscoveryExecutorContractError,
   getDiscoveryJob,
   ignoreDiscoveredDevice,
+  incorporateDiscoveredDevice,
   listDiscoveredDevices,
   listAllAuthorizedScopes,
   listAllDiscoveryExecutors,
@@ -20,6 +21,7 @@ import {
 } from "./api";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CANONICAL_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }>) {
   const canOperate = session.roles.includes("IT_OPERATOR");
@@ -105,10 +107,31 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
       }
     },
   });
+  const incorporateDevice = useMutation({
+    mutationFn: ({ device, assetId }: { device: DiscoveredDevice; assetId: string }) => (
+      incorporateDiscoveredDevice(
+        lookupId,
+        device.discoveredDeviceId,
+        assetId,
+        device.version,
+        session.csrfToken,
+      )
+    ),
+    retry: false,
+    onSuccess: async () => {
+      await queryClient.refetchQueries({ queryKey: devicesKey, exact: true });
+    },
+    onError: async (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        await queryClient.refetchQueries({ queryKey: devicesKey, exact: true });
+      }
+    },
+  });
   const pendingId = pendingJobId(creation.error);
 
   const authenticationError = [
-    scopes.error, executors.error, lookup.error, devices.error, creation.error, ignoreDevice.error,
+    scopes.error, executors.error, lookup.error, devices.error, creation.error,
+    ignoreDevice.error, incorporateDevice.error,
   ]
     .some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
@@ -162,6 +185,13 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
     if (!window.confirm(`¿Ignorar el dispositivo ${label}? Esta revisión quedará registrada.`)) return;
     ignoreDevice.reset();
     ignoreDevice.mutate(device);
+  }
+
+  function confirmIncorporate(device: DiscoveredDevice, assetId: string) {
+    const label = device.hostname ?? device.ipAddress;
+    if (!window.confirm(`¿Incorporar el dispositivo ${label} al activo ${assetId}?`)) return;
+    incorporateDevice.reset();
+    incorporateDevice.mutate({ device, assetId });
   }
 
   return (
@@ -241,8 +271,13 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
               page={devicePage}
               onPageChange={setDevicePage}
               ignoringId={ignoreDevice.isPending ? ignoreDevice.variables.discoveredDeviceId : undefined}
+              incorporatingId={incorporateDevice.isPending
+                ? incorporateDevice.variables.device.discoveredDeviceId
+                : undefined}
               ignoreError={ignoreDevice.error}
+              incorporateError={incorporateDevice.error}
               onIgnore={confirmIgnore}
+              onIncorporate={confirmIncorporate}
             />
           )}
         </div>
@@ -279,7 +314,8 @@ function JobCard({ job }: Readonly<{ job: DiscoveryJob }>) {
 }
 
 function DiscoveredDevices({
-  data, error, fetching, page, onPageChange, ignoringId, ignoreError, onIgnore,
+  data, error, fetching, page, onPageChange, ignoringId, incorporatingId,
+  ignoreError, incorporateError, onIgnore, onIncorporate,
 }: Readonly<{
   data: { items: DiscoveredDevice[]; page: number; totalElements: number; totalPages: number } | undefined;
   error: Error | null;
@@ -287,8 +323,11 @@ function DiscoveredDevices({
   page: number;
   onPageChange: (page: number) => void;
   ignoringId: string | undefined;
+  incorporatingId: string | undefined;
   ignoreError: Error | null;
+  incorporateError: Error | null;
   onIgnore: (device: DiscoveredDevice) => void;
+  onIncorporate: (device: DiscoveredDevice, assetId: string) => void;
 }>) {
   return (
     <section className="discovered-devices" aria-labelledby="discovered-devices-title">
@@ -302,6 +341,7 @@ function DiscoveredDevices({
       {fetching && !data && <p aria-live="polite">Cargando dispositivos...</p>}
       {error && <p className="form-error" role="alert">{deviceError(error)}</p>}
       {ignoreError && <p className="form-error" role="alert">{ignoreDeviceError(ignoreError)}</p>}
+      {incorporateError && <p className="form-error" role="alert">{incorporateDeviceError(incorporateError)}</p>}
       {data?.items.length === 0 && <p>No se observaron dispositivos en este Job.</p>}
       {data && data.items.length > 0 && (
         <ul className="discovered-device-list">
@@ -313,14 +353,6 @@ function DiscoveredDevices({
                   <h4>{device.hostname ?? device.ipAddress}</h4>
                 </div>
                 <strong>{device.ipAddress}</strong>
-                {device.status === "UNREVIEWED" && (
-                  <button type="button"
-                    aria-label={`Ignorar ${device.hostname ?? device.ipAddress}`}
-                    disabled={ignoringId !== undefined}
-                    onClick={() => onIgnore(device)}>
-                    {ignoringId === device.discoveredDeviceId ? "Ignorando..." : "Ignorar"}
-                  </button>
-                )}
               </div>
               <dl>
                 <div><dt>MAC</dt><dd>{device.macAddress ?? "No observada"}</dd></div>
@@ -328,7 +360,18 @@ function DiscoveredDevices({
                 <div><dt>Puertos TCP</dt><dd>{device.openTcpPorts.join(", ") || "Ninguno observado"}</dd></div>
                 <div><dt>Observado</dt><dd>{device.observedAt}</dd></div>
                 <div><dt>Revisado</dt><dd>{device.reviewedAt ?? "Pendiente"}</dd></div>
+                {device.assetId && <div><dt>Activo vinculado</dt><dd>{device.assetId}</dd></div>}
               </dl>
+              {device.status === "UNREVIEWED" && (
+                <DeviceReviewControls
+                  device={device}
+                  busy={ignoringId !== undefined || incorporatingId !== undefined}
+                  ignoring={ignoringId === device.discoveredDeviceId}
+                  incorporating={incorporatingId === device.discoveredDeviceId}
+                  onIgnore={onIgnore}
+                  onIncorporate={onIncorporate}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -343,6 +386,60 @@ function DiscoveredDevices({
         </nav>
       )}
     </section>
+  );
+}
+
+function DeviceReviewControls({
+  device, busy, ignoring, incorporating, onIgnore, onIncorporate,
+}: Readonly<{
+  device: DiscoveredDevice;
+  busy: boolean;
+  ignoring: boolean;
+  incorporating: boolean;
+  onIgnore: (device: DiscoveredDevice) => void;
+  onIncorporate: (device: DiscoveredDevice, assetId: string) => void;
+}>) {
+  const [assetId, setAssetId] = useState("");
+  const [validationError, setValidationError] = useState(false);
+  const label = device.hostname ?? device.ipAddress;
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const canonicalAssetId = assetId.trim();
+    if (!CANONICAL_UUID_V4.test(canonicalAssetId)) {
+      setValidationError(true);
+      return;
+    }
+    setValidationError(false);
+    onIncorporate(device, canonicalAssetId);
+  }
+
+  return (
+    <div className="device-review-controls">
+      <button type="button" className="ignore-device"
+        aria-label={`Ignorar ${label}`}
+        disabled={busy}
+        onClick={() => onIgnore(device)}>
+        {ignoring ? "Ignorando..." : "Ignorar"}
+      </button>
+      <form onSubmit={submit}>
+        <label htmlFor={`asset-${device.discoveredDeviceId}`}>UUID del activo para {label}</label>
+        <div>
+          <input id={`asset-${device.discoveredDeviceId}`} value={assetId} autoComplete="off"
+            disabled={busy}
+            aria-invalid={validationError}
+            onChange={(event) => {
+              setAssetId(event.target.value);
+              setValidationError(false);
+            }} />
+          <button type="submit" className="incorporate-device" disabled={busy || assetId.trim() === ""}
+            aria-label={`Incorporar ${label}`}>
+            {incorporating ? "Incorporando..." : "Incorporar"}
+          </button>
+        </div>
+        {validationError && <p className="form-error" role="alert">Introduce un UUIDv4 canónico en minúsculas.</p>}
+      </form>
+    </div>
   );
 }
 
@@ -368,6 +465,14 @@ function ignoreDeviceError(error: Error | null) {
   if (error instanceof ApiError && error.status === 409) return "El dispositivo cambió; se actualizó la página con su estado vigente.";
   if (error instanceof ApiError && (error.status === 400 || error.status === 422)) return "No fue posible validar la revisión del dispositivo.";
   return "No fue posible ignorar el dispositivo.";
+}
+
+function incorporateDeviceError(error: Error | null) {
+  if (error instanceof ApiError && error.status === 403) return "La sesión no autoriza incorporar este dispositivo.";
+  if (error instanceof ApiError && error.status === 404) return "El dispositivo o el activo ya no están disponibles.";
+  if (error instanceof ApiError && error.status === 409) return "El dispositivo o el activo cambiaron; se actualizó la página con su estado vigente.";
+  if (error instanceof ApiError && (error.status === 400 || error.status === 422)) return "No fue posible validar el activo indicado.";
+  return "No fue posible incorporar el dispositivo.";
 }
 
 function pendingJobId(error: Error | null) {
