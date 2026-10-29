@@ -437,6 +437,8 @@ h1 {
 .discovered-device-list { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
 .discovered-device-list > li { border-left: 0.35rem solid #285f51; padding: 1rem; background: var(--panel); }
 .discovered-device-title strong { overflow-wrap: anywhere; }
+.discovered-device-title button { min-height: 2.5rem; border: 1px solid #8c3a2a; padding: 0.55rem 0.8rem; color: #8c3a2a; background: transparent; font-weight: 800; cursor: pointer; }
+.discovered-device-title button:disabled { cursor: not-allowed; opacity: 0.5; }
 .discovered-device-list dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0; }
 .discovered-device-list dl div { min-width: 0; }
 .discovered-device-list dt { color: var(--muted); font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }

@@ -345,12 +345,48 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     .toBeVisible();
   await expect(discoveredDevices).toContainText("198.51.100.10");
   await expect(discoveredDevices).toContainText("22, 443");
+  const inventoryCountBeforeIgnore = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", "SELECT count(*) FROM inventory.assets",
+  ], { encoding: "utf8" }).trim();
+  const discoveredDeviceCard = discoveredDevices.getByRole("listitem")
+    .filter({ hasText: "e2e-discovered.example.internal" });
+  page.once("dialog", (dialog) => dialog.accept());
+  const ignoreDeviceResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/ignore") && response.request().method() === "POST"
+  ));
+  await discoveredDeviceCard.getByRole("button", {
+    name: "Ignorar e2e-discovered.example.internal",
+  }).click();
+  const ignoredDeviceResponse = await ignoreDeviceResponse;
+  expect(ignoredDeviceResponse.status()).toBe(200);
+  expect(await ignoredDeviceResponse.json()).toMatchObject({
+    jobId: createdJob.jobId,
+    status: "IGNORED",
+    version: 1,
+  });
+  await expect(discoveredDeviceCard).toContainText("IGNORED");
+  await expect(discoveredDeviceCard).toContainText("Revisado");
+  await expect(discoveredDeviceCard.getByRole("button", { name: /Ignorar/ })).toHaveCount(0);
+  const persistedIgnoredDevice = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT d.status || ':' || d.version || ':' || (d.reviewed_at IS NOT NULL) || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = d.discovered_device_id AND e.event_type = 'DISCOVERED_DEVICE_IGNORED'
+         AND e.resource_version = 1
+         AND e.payload = '{"newStatus":"IGNORED","previousStatus":"UNREVIEWED"}'::jsonb) || ':' ||
+      (SELECT count(*) FROM inventory.assets)
+      FROM discovery.discovered_devices d WHERE d.job_id = '${createdJob.jobId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedIgnoredDevice).toBe(`IGNORED:1:true:1:${inventoryCountBeforeIgnore}`);
   const persistedDiscoveryResult = execFileSync("docker", [
     "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
     "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
     "--command", `SELECT j.status || ':' || j.version || ':' ||
       (SELECT count(*) FROM discovery.discovered_devices d
-       WHERE d.job_id = j.job_id AND d.status = 'UNREVIEWED') || ':' ||
+       WHERE d.job_id = j.job_id AND d.status = 'IGNORED') || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_COMPLETED'
          AND e.resource_version = 2)

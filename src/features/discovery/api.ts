@@ -83,13 +83,15 @@ export type DiscoveryResultSummary = {
 export type DiscoveredDevice = {
   discoveredDeviceId: string;
   jobId: string;
-  status: "UNREVIEWED";
+  status: "UNREVIEWED" | "IGNORED";
   ipAddress: string;
   macAddress: string | null;
   hostname: string | null;
   evidence: Array<"ARP" | "ICMP" | "TCP">;
   openTcpPorts: Array<22 | 53 | 80 | 443 | 445 | 3389>;
   observedAt: string;
+  version: 0 | 1;
+  reviewedAt: string | null;
 };
 
 export type DiscoveredDevicePage = {
@@ -188,6 +190,23 @@ export async function listDiscoveredDevices(
   return parseDiscoveredDevicePage(await read(await fetch(
     `${apiUrl}/discovery-jobs/${encodeURIComponent(jobId)}/discovered-devices?page=${page}&size=${size}`,
     { credentials: "include" },
+  )), jobId);
+}
+
+export async function ignoreDiscoveredDevice(
+  jobId: string,
+  discoveredDeviceId: string,
+  expectedVersion: number,
+  csrfToken: string,
+): Promise<DiscoveredDevice> {
+  return parseDiscoveredDevice(await read(await fetch(
+    `${apiUrl}/discovery-jobs/${encodeURIComponent(jobId)}/discovered-devices/${encodeURIComponent(discoveredDeviceId)}/ignore`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ expectedVersion }),
+    },
   )), jobId);
 }
 
@@ -473,7 +492,7 @@ export function parseDiscoveredDevice(value: unknown, expectedJobId?: string): D
   if (!isRecord(value)) throw new DiscoveredDeviceContractError();
   const keys = new Set([
     "discoveredDeviceId", "jobId", "status", "ipAddress", "macAddress", "hostname",
-    "evidence", "openTcpPorts", "observedAt",
+    "evidence", "openTcpPorts", "observedAt", "version", "reviewedAt",
   ]);
   const evidence = value.evidence;
   const ports = value.openTcpPorts;
@@ -482,7 +501,7 @@ export function parseDiscoveredDevice(value: unknown, expectedJobId?: string): D
       || typeof value.discoveredDeviceId !== "string" || !UUID_V4.test(value.discoveredDeviceId)
       || typeof value.jobId !== "string" || !UUID_V4.test(value.jobId)
       || (expectedJobId !== undefined && value.jobId !== expectedJobId)
-      || value.status !== "UNREVIEWED"
+      || (value.status !== "UNREVIEWED" && value.status !== "IGNORED")
       || typeof value.ipAddress !== "string" || !isIpAddress(value.ipAddress)
       || (value.macAddress !== null && (
         typeof value.macAddress !== "string" || !/^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/.test(value.macAddress)
@@ -496,7 +515,9 @@ export function parseDiscoveredDevice(value: unknown, expectedJobId?: string): D
       || !Array.isArray(ports) || ports.length > 6
       || !ports.every((port) => typeof port === "number" && [22, 53, 80, 443, 445, 3389].includes(port))
       || new Set(ports).size !== ports.length
-      || !isDateTime(value.observedAt)) {
+      || !isDateTime(value.observedAt)
+      || (value.status === "UNREVIEWED" && (value.version !== 0 || value.reviewedAt !== null))
+      || (value.status === "IGNORED" && (value.version !== 1 || !isDateTime(value.reviewedAt)))) {
     throw new DiscoveredDeviceContractError();
   }
   return value as DiscoveredDevice;

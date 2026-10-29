@@ -68,6 +68,8 @@ const device = {
   evidence: ["ARP", "TCP"],
   openTcpPorts: [22, 443],
   observedAt: "2026-10-25T12:01:00Z",
+  version: 0,
+  reviewedAt: null,
 };
 
 describe("Discovery API parsers", () => {
@@ -209,6 +211,12 @@ describe("Discovery API parsers", () => {
     expect(parseDiscoveredDevicePage({
       items: [device], page: 0, size: 20, totalElements: 1, totalPages: 1,
     }, job.jobId).items).toEqual([device]);
+    expect(parseDiscoveredDevice({
+      ...device,
+      status: "IGNORED",
+      version: 1,
+      reviewedAt: "2026-10-25T12:02:00Z",
+    }, job.jobId)).toMatchObject({ status: "IGNORED", version: 1 });
 
     expect(() => parseDiscoveredDevice({ ...device, secret: true }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
@@ -216,6 +224,13 @@ describe("Discovery API parsers", () => {
       .toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, status: "INCORPORATED" }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, status: "IGNORED" }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, version: 1 }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({
+      ...device, status: "IGNORED", version: 1, reviewedAt: "not-a-date",
+    }, job.jobId)).toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, ipAddress: "192.0.2.999" }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, evidence: ["TCP", "TCP"] }, job.jobId))

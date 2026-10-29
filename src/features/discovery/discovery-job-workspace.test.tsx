@@ -69,6 +69,8 @@ const device = {
   evidence: ["ARP", "TCP"],
   openTcpPorts: [22, 443],
   observedAt: "2026-10-25T12:02:00Z",
+  version: 0,
+  reviewedAt: null,
 };
 
 afterEach(() => {
@@ -191,6 +193,83 @@ describe("DiscoveryJobWorkspace", () => {
     expect(devices.textContent).toContain("22, 443");
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("discovered-devices?page=0&size=20")))
       .toBe(true);
+  });
+
+  it("confirms, ignores, and refetches the exact device page without retry", async () => {
+    const ignoredDevice = {
+      ...device,
+      status: "IGNORED",
+      version: 1,
+      reviewedAt: "2026-10-25T12:03:00Z",
+    };
+    let deviceReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        deviceReads++;
+        return page([deviceReads === 1 ? device : ignoredDevice], 20);
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/ignore`) && init?.method === "POST") {
+        return json(ignoredDevice);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ignorar host.example.internal" }));
+
+    expect(await screen.findByText("IGNORED")).toBeTruthy();
+    const mutationCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/ignore"));
+    expect(mutationCalls).toHaveLength(1);
+    expect(mutationCalls[0][1]).toEqual(expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "X-CSRF-Token": operator.csrfToken }),
+      body: JSON.stringify({ expectedVersion: 0 }),
+    }));
+    expect(deviceReads).toBe(2);
+  });
+
+  it("refetches the device page after an optimistic-version conflict", async () => {
+    const ignoredDevice = {
+      ...device,
+      status: "IGNORED",
+      version: 1,
+      reviewedAt: "2026-10-25T12:03:00Z",
+    };
+    let deviceReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        deviceReads++;
+        return page([deviceReads === 1 ? device : ignoredDevice], 20);
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/ignore`) && init?.method === "POST") {
+        return json({ code: "DISCOVERED_DEVICE_VERSION_CONFLICT", correlationId: crypto.randomUUID() }, 409, "application/problem+json");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ignorar host.example.internal" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("estado vigente");
+    expect(await screen.findByText("IGNORED")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/ignore"))).toHaveLength(1);
+    expect(deviceReads).toBe(2);
   });
 
   it("does not request data for users without IT_OPERATOR", () => {

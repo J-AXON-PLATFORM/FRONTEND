@@ -11,6 +11,7 @@ import {
   DiscoveryJobContractError,
   DiscoveryExecutorContractError,
   getDiscoveryJob,
+  ignoreDiscoveredDevice,
   listDiscoveredDevices,
   listAllAuthorizedScopes,
   listAllDiscoveryExecutors,
@@ -87,9 +88,28 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
       }
     },
   });
+  const ignoreDevice = useMutation({
+    mutationFn: (device: DiscoveredDevice) => ignoreDiscoveredDevice(
+      lookupId,
+      device.discoveredDeviceId,
+      device.version,
+      session.csrfToken,
+    ),
+    retry: false,
+    onSuccess: async () => {
+      await queryClient.refetchQueries({ queryKey: devicesKey, exact: true });
+    },
+    onError: async (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        await queryClient.refetchQueries({ queryKey: devicesKey, exact: true });
+      }
+    },
+  });
   const pendingId = pendingJobId(creation.error);
 
-  const authenticationError = [scopes.error, executors.error, lookup.error, devices.error, creation.error]
+  const authenticationError = [
+    scopes.error, executors.error, lookup.error, devices.error, creation.error, ignoreDevice.error,
+  ]
     .some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
     if (authenticationError) {
@@ -135,6 +155,13 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
     event.preventDefault();
     setDevicePage(0);
     setLookupId(lookupValue.trim());
+  }
+
+  function confirmIgnore(device: DiscoveredDevice) {
+    const label = device.hostname ?? device.ipAddress;
+    if (!window.confirm(`¿Ignorar el dispositivo ${label}? Esta revisión quedará registrada.`)) return;
+    ignoreDevice.reset();
+    ignoreDevice.mutate(device);
   }
 
   return (
@@ -213,6 +240,9 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
               fetching={devices.isFetching}
               page={devicePage}
               onPageChange={setDevicePage}
+              ignoringId={ignoreDevice.isPending ? ignoreDevice.variables.discoveredDeviceId : undefined}
+              ignoreError={ignoreDevice.error}
+              onIgnore={confirmIgnore}
             />
           )}
         </div>
@@ -248,12 +278,17 @@ function JobCard({ job }: Readonly<{ job: DiscoveryJob }>) {
   );
 }
 
-function DiscoveredDevices({ data, error, fetching, page, onPageChange }: Readonly<{
+function DiscoveredDevices({
+  data, error, fetching, page, onPageChange, ignoringId, ignoreError, onIgnore,
+}: Readonly<{
   data: { items: DiscoveredDevice[]; page: number; totalElements: number; totalPages: number } | undefined;
   error: Error | null;
   fetching: boolean;
   page: number;
   onPageChange: (page: number) => void;
+  ignoringId: string | undefined;
+  ignoreError: Error | null;
+  onIgnore: (device: DiscoveredDevice) => void;
 }>) {
   return (
     <section className="discovered-devices" aria-labelledby="discovered-devices-title">
@@ -266,6 +301,7 @@ function DiscoveredDevices({ data, error, fetching, page, onPageChange }: Readon
       </header>
       {fetching && !data && <p aria-live="polite">Cargando dispositivos...</p>}
       {error && <p className="form-error" role="alert">{deviceError(error)}</p>}
+      {ignoreError && <p className="form-error" role="alert">{ignoreDeviceError(ignoreError)}</p>}
       {data?.items.length === 0 && <p>No se observaron dispositivos en este Job.</p>}
       {data && data.items.length > 0 && (
         <ul className="discovered-device-list">
@@ -277,12 +313,21 @@ function DiscoveredDevices({ data, error, fetching, page, onPageChange }: Readon
                   <h4>{device.hostname ?? device.ipAddress}</h4>
                 </div>
                 <strong>{device.ipAddress}</strong>
+                {device.status === "UNREVIEWED" && (
+                  <button type="button"
+                    aria-label={`Ignorar ${device.hostname ?? device.ipAddress}`}
+                    disabled={ignoringId !== undefined}
+                    onClick={() => onIgnore(device)}>
+                    {ignoringId === device.discoveredDeviceId ? "Ignorando..." : "Ignorar"}
+                  </button>
+                )}
               </div>
               <dl>
                 <div><dt>MAC</dt><dd>{device.macAddress ?? "No observada"}</dd></div>
                 <div><dt>Evidencia</dt><dd>{device.evidence.join(" · ")}</dd></div>
                 <div><dt>Puertos TCP</dt><dd>{device.openTcpPorts.join(", ") || "Ninguno observado"}</dd></div>
                 <div><dt>Observado</dt><dd>{device.observedAt}</dd></div>
+                <div><dt>Revisado</dt><dd>{device.reviewedAt ?? "Pendiente"}</dd></div>
               </dl>
             </li>
           ))}
@@ -315,6 +360,14 @@ function deviceError(error: Error | null) {
   if (error instanceof ApiError && error.status === 404) return "El Discovery Job ya no está disponible.";
   if (error instanceof ApiError && error.status === 422) return "La página solicitada no es válida.";
   return "No fue posible consultar los dispositivos descubiertos.";
+}
+
+function ignoreDeviceError(error: Error | null) {
+  if (error instanceof ApiError && error.status === 403) return "La sesión no autoriza ignorar este dispositivo.";
+  if (error instanceof ApiError && error.status === 404) return "El dispositivo ya no está disponible en este Discovery Job.";
+  if (error instanceof ApiError && error.status === 409) return "El dispositivo cambió; se actualizó la página con su estado vigente.";
+  if (error instanceof ApiError && (error.status === 400 || error.status === 422)) return "No fue posible validar la revisión del dispositivo.";
+  return "No fue posible ignorar el dispositivo.";
 }
 
 function pendingJobId(error: Error | null) {
