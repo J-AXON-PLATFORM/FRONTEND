@@ -298,13 +298,19 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       completedAt,
       status: "SUCCEEDED",
       failureCode: null,
-      summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 1 },
+      summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 2 },
       observations: [{
         ipAddress: "198.51.100.10",
         macAddress: "02:00:5e:10:00:01",
         hostname: "e2e-discovered.example.internal",
         evidence: ["ARP", "TCP"],
         openTcpPorts: [22, 443],
+      }, {
+        ipAddress: "198.51.100.11",
+        macAddress: "02:00:5e:10:00:02",
+        hostname: "e2e-incorporated.example.internal",
+        evidence: ["ICMP", "TCP"],
+        openTcpPorts: [80],
       }],
     }));
     writeFileSync(batchPath, [
@@ -378,7 +384,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
          AND e.resource_version = 1
          AND e.payload = '{"newStatus":"IGNORED","previousStatus":"UNREVIEWED"}'::jsonb) || ':' ||
       (SELECT count(*) FROM inventory.assets)
-      FROM discovery.discovered_devices d WHERE d.job_id = '${createdJob.jobId}'`,
+       FROM discovery.discovered_devices d
+       WHERE d.job_id = '${createdJob.jobId}' AND d.status = 'IGNORED'`,
   ], { encoding: "utf8" }).trim();
   expect(persistedIgnoredDevice).toBe(`IGNORED:1:true:1:${inventoryCountBeforeIgnore}`);
   const persistedDiscoveryResult = execFileSync("docker", [
@@ -511,6 +518,54 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const assetId = await page.getByLabel("UUID del activo").inputValue();
   expect(assetId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   await expect(page.getByRole("article", { name: "Consulta por ID" })).toContainText(assetId);
+
+  const inventoryBeforeIncorporation = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT md5(row_to_json(a)::text) || ':' ||
+      (SELECT count(*) FROM inventory.outbox_events) FROM inventory.assets a WHERE a.id = '${assetId}'`,
+  ], { encoding: "utf8" }).trim();
+  await jobWorkspace.getByLabel("UUID del job").fill(createdJob.jobId);
+  await jobWorkspace.getByRole("button", { name: "Consultar job" }).click();
+  const incorporatedDeviceCard = jobWorkspace.getByRole("listitem")
+    .filter({ hasText: "e2e-incorporated.example.internal" });
+  await expect(incorporatedDeviceCard).toContainText("UNREVIEWED");
+  await incorporatedDeviceCard.getByLabel("UUID del activo para e2e-incorporated.example.internal")
+    .fill(assetId);
+  page.once("dialog", (dialog) => dialog.accept());
+  const incorporateDeviceResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/incorporate") && response.request().method() === "POST"
+  ));
+  await incorporatedDeviceCard.getByRole("button", {
+    name: "Incorporar e2e-incorporated.example.internal",
+  }).click();
+  const incorporatedResponse = await incorporateDeviceResponse;
+  expect(incorporatedResponse.status()).toBe(200);
+  const incorporatedDevice = await incorporatedResponse.json() as { discoveredDeviceId: string };
+  await expect(incorporatedDeviceCard).toContainText("INCORPORATED");
+  await expect(incorporatedDeviceCard).toContainText(assetId);
+  await expect(incorporatedDeviceCard.getByRole("button", { name: /Incorporar/ })).toHaveCount(0);
+  const persistedIncorporation = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT d.status || ':' || d.version || ':' || d.inventory_asset_id || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = d.discovered_device_id
+         AND e.event_type = 'DISCOVERED_DEVICE_INCORPORATED'
+         AND e.event_version = '1.0' AND e.producer_module = 'DISCOVERY'
+         AND e.resource_type = 'DISCOVERED_DEVICE' AND e.resource_version = 1
+         AND e.payload = jsonb_build_object('previousStatus', 'UNREVIEWED',
+           'newStatus', 'INCORPORATED', 'assetId', '${assetId}'))
+      FROM discovery.discovered_devices d WHERE d.discovered_device_id = '${incorporatedDevice.discoveredDeviceId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedIncorporation).toBe(`INCORPORATED:1:${assetId}:1`);
+  const inventoryAfterIncorporation = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT md5(row_to_json(a)::text) || ':' ||
+      (SELECT count(*) FROM inventory.outbox_events) FROM inventory.assets a WHERE a.id = '${assetId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(inventoryAfterIncorporation).toBe(inventoryBeforeIncorporation);
 
   await page.reload();
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();

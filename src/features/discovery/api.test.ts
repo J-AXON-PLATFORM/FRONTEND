@@ -62,6 +62,7 @@ const device = {
   discoveredDeviceId: "33cdd354-5b5d-42e1-9647-4420f407a97f",
   jobId: job.jobId,
   status: "UNREVIEWED",
+  assetId: null,
   ipAddress: "192.0.2.10",
   macAddress: "02:00:5e:10:00:01",
   hostname: "host.example.internal",
@@ -217,6 +218,13 @@ describe("Discovery API parsers", () => {
       version: 1,
       reviewedAt: "2026-10-25T12:02:00Z",
     }, job.jobId)).toMatchObject({ status: "IGNORED", version: 1 });
+    expect(parseDiscoveredDevice({
+      ...device,
+      status: "INCORPORATED",
+      version: 1,
+      reviewedAt: "2026-10-25T12:02:00Z",
+      assetId: scope.scopeId,
+    }, job.jobId)).toMatchObject({ status: "INCORPORATED", assetId: scope.scopeId });
 
     expect(() => parseDiscoveredDevice({ ...device, secret: true }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
@@ -228,8 +236,22 @@ describe("Discovery API parsers", () => {
       .toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, version: 1 }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({ ...device, assetId: scope.scopeId }, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    const deviceWithoutAssetId: Record<string, unknown> = { ...device };
+    delete deviceWithoutAssetId.assetId;
+    expect(() => parseDiscoveredDevice(deviceWithoutAssetId, job.jobId))
+      .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({
+      ...device, status: "IGNORED", version: 1,
+      reviewedAt: "2026-10-25T12:02:00Z", assetId: scope.scopeId,
+    }, job.jobId)).toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({
       ...device, status: "IGNORED", version: 1, reviewedAt: "not-a-date",
+    }, job.jobId)).toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice({
+      ...device, status: "INCORPORATED", version: 1,
+      reviewedAt: "2026-10-25T12:02:00Z", assetId: "invalid",
     }, job.jobId)).toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, ipAddress: "192.0.2.999" }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);

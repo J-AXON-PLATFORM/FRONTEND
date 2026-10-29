@@ -63,6 +63,7 @@ const device = {
   discoveredDeviceId: "33cdd354-5b5d-42e1-9647-4420f407a97f",
   jobId: job.jobId,
   status: "UNREVIEWED",
+  assetId: null,
   ipAddress: "192.0.2.10",
   macAddress: "02:00:5e:10:00:01",
   hostname: "host.example.internal",
@@ -199,6 +200,7 @@ describe("DiscoveryJobWorkspace", () => {
     const ignoredDevice = {
       ...device,
       status: "IGNORED",
+      assetId: null,
       version: 1,
       reviewedAt: "2026-10-25T12:03:00Z",
     };
@@ -240,6 +242,7 @@ describe("DiscoveryJobWorkspace", () => {
     const ignoredDevice = {
       ...device,
       status: "IGNORED",
+      assetId: null,
       version: 1,
       reviewedAt: "2026-10-25T12:03:00Z",
     };
@@ -270,6 +273,129 @@ describe("DiscoveryJobWorkspace", () => {
     expect(await screen.findByText("IGNORED")).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/ignore"))).toHaveLength(1);
     expect(deviceReads).toBe(2);
+  });
+
+  it("confirms, incorporates, and refetches without retry or optimistic state", async () => {
+    const assetId = "34844482-1d29-4d30-87fd-1bb67a22e050";
+    const incorporatedDevice = {
+      ...device,
+      status: "INCORPORATED",
+      assetId,
+      version: 1,
+      reviewedAt: "2026-10-25T12:03:00Z",
+    };
+    let deviceReads = 0;
+    let resolveIncorporation!: (response: Response) => void;
+    const pendingIncorporation = new Promise<Response>((resolve) => {
+      resolveIncorporation = resolve;
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        deviceReads++;
+        return page([deviceReads === 1 ? device : incorporatedDevice], 20);
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/incorporate`)
+          && init?.method === "POST") return pendingIncorporation;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    const assetInput = await screen.findByLabelText("UUID del activo para host.example.internal");
+    fireEvent.change(assetInput, { target: { value: assetId } });
+    fireEvent.click(screen.getByRole("button", { name: "Incorporar host.example.internal" }));
+
+    expect(await screen.findByRole("button", { name: "Incorporar host.example.internal" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("UNREVIEWED")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Incorporar host.example.internal" }));
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/incorporate"))).toHaveLength(1);
+    resolveIncorporation(json(incorporatedDevice));
+    expect(await screen.findByText("INCORPORATED")).toBeTruthy();
+    expect(screen.getByText("Activo vinculado").parentElement?.textContent).toContain(assetId);
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining(assetId));
+    const mutationCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/incorporate"));
+    expect(mutationCalls).toHaveLength(1);
+    expect(mutationCalls[0][1]).toEqual(expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "X-CSRF-Token": operator.csrfToken }),
+      body: JSON.stringify({ assetId, expectedVersion: 0 }),
+    }));
+    expect(deviceReads).toBe(2);
+  });
+
+  it("keeps the asset UUID and refetches after an incorporation conflict", async () => {
+    const assetId = "34844482-1d29-4d30-87fd-1bb67a22e050";
+    let firstPageReads = 0;
+    let secondPageReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        firstPageReads++;
+        return json({ items: [], page: 0, size: 20, totalElements: 1, totalPages: 2 });
+      }
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=1&size=20`)) {
+        secondPageReads++;
+        return json({ items: [device], page: 1, size: 20, totalElements: 1, totalPages: 2 });
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/incorporate`)
+          && init?.method === "POST") {
+        return json({ code: "DISCOVERED_DEVICE_VERSION_CONFLICT", correlationId: crypto.randomUUID() }, 409, "application/problem+json");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Siguiente" }));
+    const assetInput = await screen.findByLabelText("UUID del activo para host.example.internal");
+    fireEvent.change(assetInput, { target: { value: assetId } });
+    fireEvent.click(screen.getByRole("button", { name: "Incorporar host.example.internal" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("estado vigente");
+    expect(screen.getByLabelText("UUID del activo para host.example.internal")).toHaveProperty("value", assetId);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/incorporate"))).toHaveLength(1);
+    expect(firstPageReads).toBe(1);
+    expect(secondPageReads).toBe(2);
+  });
+
+  it("rejects a non-canonical asset UUID before confirmation or submission", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes("/discovered-devices?page=0&size=20")) return page([device], 20);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.change(await screen.findByLabelText("UUID del activo para host.example.internal"), {
+      target: { value: "34844482-1D29-4D30-87FD-1BB67A22E050" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Incorporar host.example.internal" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("canónico en minúsculas");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/incorporate"))).toBe(false);
   });
 
   it("does not request data for users without IT_OPERATOR", () => {
