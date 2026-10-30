@@ -441,14 +441,24 @@ h1 {
 .discovered-device-list dl div { min-width: 0; }
 .discovered-device-list dt { color: var(--muted); font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }
 .discovered-device-list dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
-.device-review-controls { display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: end; border-top: 1px solid var(--line); margin-top: 1rem; padding-top: 1rem; }
+.device-review-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1rem; align-items: end; border-top: 1px solid var(--line); margin-top: 1rem; padding-top: 1rem; }
 .device-review-controls form { display: grid; gap: 0.35rem; }
 .device-review-controls form > div { display: grid; grid-template-columns: minmax(12rem, 1fr) auto; gap: 0.5rem; }
-.device-review-controls input { min-width: 0; }
+.device-review-controls input, .device-review-controls select { min-width: 0; }
 .device-review-controls button { min-height: 2.5rem; border: 1px solid; padding: 0.55rem 0.8rem; background: transparent; font-weight: 800; cursor: pointer; }
 .device-review-controls button:disabled { cursor: not-allowed; opacity: 0.5; }
 .device-review-controls .ignore-device { border-color: #8c3a2a; color: #8c3a2a; }
 .device-review-controls .incorporate-device { border-color: #285f51; color: #285f51; }
+.device-review-controls .new-asset-incorporation { grid-column: 2; border-top: 1px dashed var(--line); padding-top: 0.75rem; }
+.device-review-controls .control-title { margin: 0; color: var(--muted); font-size: 0.75rem; font-weight: 800; text-transform: uppercase; }
+.device-review-controls form > .new-asset-fields { grid-template-columns: minmax(12rem, 1fr) minmax(10rem, 0.55fr) auto; align-items: end; }
+.new-asset-fields label { align-self: end; }
+.new-asset-fields label:first-child { grid-column: 1; }
+.new-asset-fields input { grid-column: 1; }
+.new-asset-fields label:nth-of-type(2) { grid-column: 2; grid-row: 1; }
+.new-asset-fields select { grid-column: 2; grid-row: 2; }
+.new-asset-fields button { grid-column: 3; grid-row: 2; }
+.device-review-controls .incorporate-new-asset { border-color: #b44b2a; color: #8c3a2a; }
 .device-review-controls .form-error { margin: 0.25rem 0 0; }
 .device-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .device-pagination button { min-height: 2.7rem; border: 1px solid #285f51; padding: 0.65rem 1rem; color: #285f51; background: transparent; font-weight: 800; cursor: pointer; }
@@ -521,6 +531,11 @@ h1 {
   .discovered-devices > header, .discovered-device-title { display: grid; }
   .discovered-device-list dl { grid-template-columns: 1fr; }
   .device-review-controls, .device-review-controls form > div { grid-template-columns: 1fr; }
+  .device-review-controls form > .new-asset-fields { grid-template-columns: 1fr; }
+  .device-review-controls .new-asset-incorporation { grid-column: auto; }
+  .new-asset-fields label:first-child, .new-asset-fields input,
+  .new-asset-fields label:nth-of-type(2), .new-asset-fields select,
+  .new-asset-fields button { grid-column: auto; grid-row: auto; }
   .device-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .executor-card { align-items: stretch; flex-direction: column; }
   .executor-detail dl { grid-template-columns: 1fr; }

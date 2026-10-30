@@ -1,6 +1,7 @@
 "use client";
 
 import { ApiError, type Session } from "@/features/auth/api";
+import type { AssetType } from "@/features/inventory/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
@@ -13,6 +14,7 @@ import {
   getDiscoveryJob,
   ignoreDiscoveredDevice,
   incorporateDiscoveredDevice,
+  incorporateDiscoveredDeviceWithNewAsset,
   listDiscoveredDevices,
   listAllAuthorizedScopes,
   listAllDiscoveryExecutors,
@@ -22,6 +24,14 @@ import {
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CANONICAL_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const ASSET_TYPES: { value: AssetType; label: string }[] = [
+  { value: "DESKTOP", label: "Equipo de escritorio" },
+  { value: "LAPTOP", label: "Portátil" },
+  { value: "SERVER", label: "Servidor" },
+  { value: "NETWORK_DEVICE", label: "Dispositivo de red" },
+  { value: "PRINTER", label: "Impresora" },
+  { value: "OTHER", label: "Otro" },
+];
 
 export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }>) {
   const canOperate = session.roles.includes("IT_OPERATOR");
@@ -127,11 +137,44 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
       }
     },
   });
+  const incorporateNewAsset = useMutation({
+    mutationFn: ({ device, name, assetType, jobId }: {
+      device: DiscoveredDevice; name: string; assetType: AssetType; jobId: string; page: number;
+    }) => incorporateDiscoveredDeviceWithNewAsset(
+      jobId,
+      device.discoveredDeviceId,
+      name,
+      assetType,
+      device.version,
+      session.csrfToken,
+    ),
+    retry: false,
+    onSuccess: async (_, variables) => {
+      await queryClient.refetchQueries({
+        queryKey: [
+          "discovery", "jobs", session.userId, "IT_OPERATOR",
+          variables.jobId, "devices", variables.page,
+        ],
+        exact: true,
+      });
+    },
+    onError: async (error, variables) => {
+      if (error instanceof ApiError && error.status === 409) {
+        await queryClient.refetchQueries({
+          queryKey: [
+            "discovery", "jobs", session.userId, "IT_OPERATOR",
+            variables.jobId, "devices", variables.page,
+          ],
+          exact: true,
+        });
+      }
+    },
+  });
   const pendingId = pendingJobId(creation.error);
 
   const authenticationError = [
     scopes.error, executors.error, lookup.error, devices.error, creation.error,
-    ignoreDevice.error, incorporateDevice.error,
+    ignoreDevice.error, incorporateDevice.error, incorporateNewAsset.error,
   ]
     .some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
@@ -192,6 +235,13 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
     if (!window.confirm(`¿Incorporar el dispositivo ${label} al activo ${assetId}?`)) return;
     incorporateDevice.reset();
     incorporateDevice.mutate({ device, assetId });
+  }
+
+  function confirmIncorporateNewAsset(device: DiscoveredDevice, name: string, assetType: AssetType) {
+    const label = device.hostname ?? device.ipAddress;
+    if (!window.confirm(`¿Crear el activo ${name} (${assetType}) e incorporar el dispositivo ${label}?`)) return;
+    incorporateNewAsset.reset();
+    incorporateNewAsset.mutate({ device, name, assetType, jobId: lookupId, page: devicePage });
   }
 
   return (
@@ -274,10 +324,15 @@ export function DiscoveryJobWorkspace({ session }: Readonly<{ session: Session }
               incorporatingId={incorporateDevice.isPending
                 ? incorporateDevice.variables.device.discoveredDeviceId
                 : undefined}
+              creatingAssetId={incorporateNewAsset.isPending
+                ? incorporateNewAsset.variables.device.discoveredDeviceId
+                : undefined}
               ignoreError={ignoreDevice.error}
               incorporateError={incorporateDevice.error}
+              incorporateNewAssetError={incorporateNewAsset.error}
               onIgnore={confirmIgnore}
               onIncorporate={confirmIncorporate}
+              onIncorporateNewAsset={confirmIncorporateNewAsset}
             />
           )}
         </div>
@@ -314,8 +369,9 @@ function JobCard({ job }: Readonly<{ job: DiscoveryJob }>) {
 }
 
 function DiscoveredDevices({
-  data, error, fetching, page, onPageChange, ignoringId, incorporatingId,
-  ignoreError, incorporateError, onIgnore, onIncorporate,
+  data, error, fetching, page, onPageChange, ignoringId, incorporatingId, creatingAssetId,
+  ignoreError, incorporateError, incorporateNewAssetError,
+  onIgnore, onIncorporate, onIncorporateNewAsset,
 }: Readonly<{
   data: { items: DiscoveredDevice[]; page: number; totalElements: number; totalPages: number } | undefined;
   error: Error | null;
@@ -324,10 +380,13 @@ function DiscoveredDevices({
   onPageChange: (page: number) => void;
   ignoringId: string | undefined;
   incorporatingId: string | undefined;
+  creatingAssetId: string | undefined;
   ignoreError: Error | null;
   incorporateError: Error | null;
+  incorporateNewAssetError: Error | null;
   onIgnore: (device: DiscoveredDevice) => void;
   onIncorporate: (device: DiscoveredDevice, assetId: string) => void;
+  onIncorporateNewAsset: (device: DiscoveredDevice, name: string, assetType: AssetType) => void;
 }>) {
   return (
     <section className="discovered-devices" aria-labelledby="discovered-devices-title">
@@ -342,6 +401,9 @@ function DiscoveredDevices({
       {error && <p className="form-error" role="alert">{deviceError(error)}</p>}
       {ignoreError && <p className="form-error" role="alert">{ignoreDeviceError(ignoreError)}</p>}
       {incorporateError && <p className="form-error" role="alert">{incorporateDeviceError(incorporateError)}</p>}
+      {incorporateNewAssetError && (
+        <p className="form-error" role="alert">{incorporateNewAssetDeviceError(incorporateNewAssetError)}</p>
+      )}
       {data?.items.length === 0 && <p>No se observaron dispositivos en este Job.</p>}
       {data && data.items.length > 0 && (
         <ul className="discovered-device-list">
@@ -365,11 +427,13 @@ function DiscoveredDevices({
               {device.status === "UNREVIEWED" && (
                 <DeviceReviewControls
                   device={device}
-                  busy={ignoringId !== undefined || incorporatingId !== undefined}
+                  busy={ignoringId !== undefined || incorporatingId !== undefined || creatingAssetId !== undefined}
                   ignoring={ignoringId === device.discoveredDeviceId}
                   incorporating={incorporatingId === device.discoveredDeviceId}
+                  creatingAsset={creatingAssetId === device.discoveredDeviceId}
                   onIgnore={onIgnore}
                   onIncorporate={onIncorporate}
+                  onIncorporateNewAsset={onIncorporateNewAsset}
                 />
               )}
             </li>
@@ -390,17 +454,23 @@ function DiscoveredDevices({
 }
 
 function DeviceReviewControls({
-  device, busy, ignoring, incorporating, onIgnore, onIncorporate,
+  device, busy, ignoring, incorporating, creatingAsset,
+  onIgnore, onIncorporate, onIncorporateNewAsset,
 }: Readonly<{
   device: DiscoveredDevice;
   busy: boolean;
   ignoring: boolean;
   incorporating: boolean;
+  creatingAsset: boolean;
   onIgnore: (device: DiscoveredDevice) => void;
   onIncorporate: (device: DiscoveredDevice, assetId: string) => void;
+  onIncorporateNewAsset: (device: DiscoveredDevice, name: string, assetType: AssetType) => void;
 }>) {
   const [assetId, setAssetId] = useState("");
   const [validationError, setValidationError] = useState(false);
+  const [assetName, setAssetName] = useState("");
+  const [assetType, setAssetType] = useState<AssetType>("DESKTOP");
+  const [newAssetValidationError, setNewAssetValidationError] = useState(false);
   const label = device.hostname ?? device.ipAddress;
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -412,6 +482,17 @@ function DeviceReviewControls({
     }
     setValidationError(false);
     onIncorporate(device, canonicalAssetId);
+  }
+
+  function submitNewAsset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const canonicalName = assetName.trim();
+    if (canonicalName.length < 1 || canonicalName.length > 256) {
+      setNewAssetValidationError(true);
+      return;
+    }
+    setNewAssetValidationError(false);
+    onIncorporateNewAsset(device, canonicalName, assetType);
   }
 
   return (
@@ -438,6 +519,31 @@ function DeviceReviewControls({
           </button>
         </div>
         {validationError && <p className="form-error" role="alert">Introduce un UUIDv4 canónico en minúsculas.</p>}
+      </form>
+      <form className="new-asset-incorporation" onSubmit={submitNewAsset}>
+        <p className="control-title">Crear activo nuevo</p>
+        <div className="new-asset-fields">
+          <label htmlFor={`new-asset-name-${device.discoveredDeviceId}`}>Nombre del activo para {label}</label>
+          <input id={`new-asset-name-${device.discoveredDeviceId}`} maxLength={256} value={assetName}
+            disabled={busy} required
+            aria-invalid={newAssetValidationError}
+            onChange={(event) => {
+              setAssetName(event.target.value);
+              setNewAssetValidationError(false);
+            }} />
+          <label htmlFor={`new-asset-type-${device.discoveredDeviceId}`}>Tipo del activo para {label}</label>
+          <select id={`new-asset-type-${device.discoveredDeviceId}`} value={assetType} disabled={busy}
+            onChange={(event) => setAssetType(event.target.value as AssetType)}>
+            {ASSET_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+          </select>
+          <button type="submit" className="incorporate-new-asset" disabled={busy || assetName.trim() === ""}
+            aria-label={`Crear activo e incorporar ${label}`}>
+            {creatingAsset ? "Creando e incorporando..." : "Crear e incorporar"}
+          </button>
+        </div>
+        {newAssetValidationError && (
+          <p className="form-error" role="alert">Introduce un nombre de activo de hasta 256 caracteres.</p>
+        )}
       </form>
     </div>
   );
@@ -473,6 +579,14 @@ function incorporateDeviceError(error: Error | null) {
   if (error instanceof ApiError && error.status === 409) return "El dispositivo o el activo cambiaron; se actualizó la página con su estado vigente.";
   if (error instanceof ApiError && (error.status === 400 || error.status === 422)) return "No fue posible validar el activo indicado.";
   return "No fue posible incorporar el dispositivo.";
+}
+
+function incorporateNewAssetDeviceError(error: Error | null) {
+  if (error instanceof ApiError && error.status === 403) return "La sesión no autoriza crear el activo e incorporar este dispositivo.";
+  if (error instanceof ApiError && error.status === 404) return "El dispositivo ya no está disponible en este Discovery Job.";
+  if (error instanceof ApiError && error.status === 409) return "El dispositivo cambió; se actualizó la página con su estado vigente.";
+  if (error instanceof ApiError && (error.status === 400 || error.status === 422)) return "No fue posible validar los datos del activo nuevo.";
+  return "No fue posible crear el activo e incorporar el dispositivo.";
 }
 
 function pendingJobId(error: Error | null) {
