@@ -208,7 +208,7 @@ export async function ignoreDiscoveredDevice(
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
       body: JSON.stringify({ expectedVersion }),
     },
-  )), jobId);
+  )), jobId, discoveredDeviceId);
 }
 
 export async function incorporateDiscoveredDevice(
@@ -226,7 +226,26 @@ export async function incorporateDiscoveredDevice(
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
       body: JSON.stringify({ assetId, expectedVersion }),
     },
-  )), jobId);
+  )), jobId, discoveredDeviceId);
+}
+
+export async function incorporateDiscoveredDeviceWithNewAsset(
+  jobId: string,
+  discoveredDeviceId: string,
+  name: string,
+  assetType: string,
+  expectedVersion: number,
+  csrfToken: string,
+): Promise<DiscoveredDevice> {
+  return parseDiscoveredDevice(await read(await fetch(
+    `${apiUrl}/discovery-jobs/${encodeURIComponent(jobId)}/discovered-devices/${encodeURIComponent(discoveredDeviceId)}/incorporate-new-asset`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ name, assetType, expectedVersion }),
+    },
+  )), jobId, discoveredDeviceId);
 }
 
 export async function createDiscoveryExecutor(
@@ -507,7 +526,11 @@ export function parseDiscoveryJob(value: unknown): DiscoveryJob {
   return value as DiscoveryJob;
 }
 
-export function parseDiscoveredDevice(value: unknown, expectedJobId?: string): DiscoveredDevice {
+export function parseDiscoveredDevice(
+  value: unknown,
+  expectedJobId?: string,
+  expectedDiscoveredDeviceId?: string,
+): DiscoveredDevice {
   if (!isRecord(value)) throw new DiscoveredDeviceContractError();
   const keys = new Set([
     "discoveredDeviceId", "jobId", "status", "ipAddress", "macAddress", "hostname",
@@ -518,6 +541,8 @@ export function parseDiscoveredDevice(value: unknown, expectedJobId?: string): D
   if (Object.keys(value).length !== keys.size
       || Object.keys(value).some((key) => !keys.has(key))
       || typeof value.discoveredDeviceId !== "string" || !UUID_V4.test(value.discoveredDeviceId)
+      || (expectedDiscoveredDeviceId !== undefined
+        && value.discoveredDeviceId !== expectedDiscoveredDeviceId)
       || typeof value.jobId !== "string" || !UUID_V4.test(value.jobId)
       || (expectedJobId !== undefined && value.jobId !== expectedJobId)
       || (value.status !== "UNREVIEWED" && value.status !== "IGNORED" && value.status !== "INCORPORATED")

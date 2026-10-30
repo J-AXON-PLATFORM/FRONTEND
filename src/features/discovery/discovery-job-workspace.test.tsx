@@ -372,6 +372,166 @@ describe("DiscoveryJobWorkspace", () => {
     expect(secondPageReads).toBe(2);
   });
 
+  it("creates an ACTIVE asset, incorporates, and refetches without retry or optimistic state", async () => {
+    const createdAssetId = "c24ed024-b898-48e0-a77d-e65c7ee55acd";
+    const incorporatedDevice = {
+      ...device,
+      status: "INCORPORATED",
+      assetId: createdAssetId,
+      version: 1,
+      reviewedAt: "2026-10-25T12:04:00Z",
+    };
+    let deviceReads = 0;
+    let resolveCreation!: (response: Response) => void;
+    const pendingCreation = new Promise<Response>((resolve) => {
+      resolveCreation = resolve;
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        deviceReads++;
+        return page([deviceReads === 1 ? device : incorporatedDevice], 20);
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/incorporate-new-asset`)
+          && init?.method === "POST") return pendingCreation;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.change(await screen.findByLabelText("Nombre del activo para host.example.internal"), {
+      target: { value: "  Switch oficina  " },
+    });
+    fireEvent.change(screen.getByLabelText("Tipo del activo para host.example.internal"), {
+      target: { value: "NETWORK_DEVICE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Crear activo e incorporar host.example.internal" }));
+
+    const submit = await screen.findByRole("button", { name: "Crear activo e incorporar host.example.internal" });
+    expect(submit).toHaveProperty("disabled", true);
+    expect(screen.getByText("UNREVIEWED")).toBeTruthy();
+    fireEvent.click(submit);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/incorporate-new-asset")))
+      .toHaveLength(1);
+    resolveCreation(json(incorporatedDevice));
+
+    expect(await screen.findByText("INCORPORATED")).toBeTruthy();
+    expect(screen.getByText("Activo vinculado").parentElement?.textContent).toContain(createdAssetId);
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Switch oficina (NETWORK_DEVICE)"));
+    const mutationCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/incorporate-new-asset"));
+    expect(mutationCalls).toHaveLength(1);
+    expect(mutationCalls[0][1]).toEqual(expect.objectContaining({
+      method: "POST",
+      credentials: "include",
+      headers: expect.objectContaining({ "X-CSRF-Token": operator.csrfToken }),
+      body: JSON.stringify({ name: "Switch oficina", assetType: "NETWORK_DEVICE", expectedVersion: 0 }),
+    }));
+    expect(deviceReads).toBe(2);
+  });
+
+  it("keeps new-asset values and refetches the exact page after a creation conflict", async () => {
+    let firstPageReads = 0;
+    let secondPageReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        firstPageReads++;
+        return json({ items: [], page: 0, size: 20, totalElements: 1, totalPages: 2 });
+      }
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=1&size=20`)) {
+        secondPageReads++;
+        return json({ items: [device], page: 1, size: 20, totalElements: 1, totalPages: 2 });
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/incorporate-new-asset`)
+          && init?.method === "POST") {
+        return json({ code: "DISCOVERED_DEVICE_VERSION_CONFLICT", correlationId: crypto.randomUUID() }, 409, "application/problem+json");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Siguiente" }));
+    fireEvent.change(await screen.findByLabelText("Nombre del activo para host.example.internal"), {
+      target: { value: "Servidor observado" },
+    });
+    fireEvent.change(screen.getByLabelText("Tipo del activo para host.example.internal"), {
+      target: { value: "SERVER" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Crear activo e incorporar host.example.internal" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("estado vigente");
+    expect(screen.getByLabelText("Nombre del activo para host.example.internal"))
+      .toHaveProperty("value", "Servidor observado");
+    expect(screen.getByLabelText("Tipo del activo para host.example.internal"))
+      .toHaveProperty("value", "SERVER");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/incorporate-new-asset")))
+      .toHaveLength(1);
+    expect(firstPageReads).toBe(1);
+    expect(secondPageReads).toBe(2);
+  });
+
+  it("refetches the submitted page when pagination changes during creation", async () => {
+    let firstPageReads = 0;
+    let secondPageReads = 0;
+    let resolveConflict!: (response: Response) => void;
+    const pendingConflict = new Promise<Response>((resolve) => {
+      resolveConflict = resolve;
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/discovery/scopes")) return page([scope], 50);
+      if (url.includes("/discovery/executors?page=")) return page([executor], 20);
+      if (url.endsWith(`/discovery/jobs/${job.jobId}`)) return json(succeededJob);
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=0&size=20`)) {
+        firstPageReads++;
+        return json({ items: [], page: 0, size: 20, totalElements: 1, totalPages: 2 });
+      }
+      if (url.includes(`/discovery-jobs/${job.jobId}/discovered-devices?page=1&size=20`)) {
+        secondPageReads++;
+        return json({ items: [device], page: 1, size: 20, totalElements: 1, totalPages: 2 });
+      }
+      if (url.endsWith(`/discovered-devices/${device.discoveredDeviceId}/incorporate-new-asset`)
+          && init?.method === "POST") return pendingConflict;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    fireEvent.change(screen.getByLabelText("UUID del job"), { target: { value: job.jobId } });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar job" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Siguiente" }));
+    fireEvent.change(await screen.findByLabelText("Nombre del activo para host.example.internal"), {
+      target: { value: "Equipo observado" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Crear activo e incorporar host.example.internal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Anterior" }));
+    await screen.findByText("No se observaron dispositivos en este Job.");
+
+    resolveConflict(json(
+      { code: "DISCOVERED_DEVICE_VERSION_CONFLICT", correlationId: crypto.randomUUID() },
+      409,
+      "application/problem+json",
+    ));
+    expect((await screen.findByRole("alert")).textContent).toContain("estado vigente");
+    expect(firstPageReads).toBe(1);
+    expect(secondPageReads).toBe(2);
+  });
+
   it("rejects a non-canonical asset UUID before confirmation or submission", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);

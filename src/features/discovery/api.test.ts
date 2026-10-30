@@ -230,6 +230,11 @@ describe("Discovery API parsers", () => {
       .toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, jobId: scope.scopeId }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
+    expect(() => parseDiscoveredDevice(
+      { ...device, discoveredDeviceId: scope.scopeId },
+      job.jobId,
+      device.discoveredDeviceId,
+    )).toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, status: "INCORPORATED" }, job.jobId))
       .toThrow(DiscoveredDeviceContractError);
     expect(() => parseDiscoveredDevice({ ...device, status: "IGNORED" }, job.jobId))

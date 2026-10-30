@@ -298,7 +298,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       completedAt,
       status: "SUCCEEDED",
       failureCode: null,
-      summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 2 },
+      summary: { targetsConsidered: 256, targetsScanned: 256, observationsFound: 3 },
       observations: [{
         ipAddress: "198.51.100.10",
         macAddress: "02:00:5e:10:00:01",
@@ -311,6 +311,12 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
         hostname: "e2e-incorporated.example.internal",
         evidence: ["ICMP", "TCP"],
         openTcpPorts: [80],
+      }, {
+        ipAddress: "198.51.100.12",
+        macAddress: "02:00:5e:10:00:03",
+        hostname: "e2e-new-asset.example.internal",
+        evidence: ["ARP", "TCP"],
+        openTcpPorts: [443],
       }],
     }));
     writeFileSync(batchPath, [
@@ -538,6 +544,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   ));
   await incorporatedDeviceCard.getByRole("button", {
     name: "Incorporar e2e-incorporated.example.internal",
+    exact: true,
   }).click();
   const incorporatedResponse = await incorporateDeviceResponse;
   expect(incorporatedResponse.status()).toBe(200);
@@ -566,6 +573,102 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       (SELECT count(*) FROM inventory.outbox_events) FROM inventory.assets a WHERE a.id = '${assetId}'`,
   ], { encoding: "utf8" }).trim();
   expect(inventoryAfterIncorporation).toBe(inventoryBeforeIncorporation);
+
+  const newAssetName = `E2E Discovered Asset ${Date.now()}`;
+  const newAssetDeviceCard = jobWorkspace.getByRole("listitem")
+    .filter({ hasText: "e2e-new-asset.example.internal" });
+  await expect(newAssetDeviceCard).toContainText("UNREVIEWED");
+  await newAssetDeviceCard.getByLabel("Nombre del activo para e2e-new-asset.example.internal")
+    .fill(newAssetName);
+  await newAssetDeviceCard.getByLabel("Tipo del activo para e2e-new-asset.example.internal")
+    .selectOption("NETWORK_DEVICE");
+  page.once("dialog", (dialog) => dialog.accept());
+  const createAndIncorporateResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/incorporate-new-asset") && response.request().method() === "POST"
+  ));
+  await newAssetDeviceCard.getByRole("button", {
+    name: "Crear activo e incorporar e2e-new-asset.example.internal",
+  }).click();
+  const createdAndIncorporatedResponse = await createAndIncorporateResponse;
+  expect(createdAndIncorporatedResponse.status()).toBe(200);
+  const createdAndIncorporatedDevice = await createdAndIncorporatedResponse.json() as {
+    discoveredDeviceId: string;
+    assetId: string;
+  };
+  expect(createdAndIncorporatedDevice.assetId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  await expect(newAssetDeviceCard).toContainText("INCORPORATED");
+  await expect(newAssetDeviceCard).toContainText(createdAndIncorporatedDevice.assetId);
+  await expect(newAssetDeviceCard.getByRole("button", { name: /Crear activo e incorporar/ }))
+    .toHaveCount(0);
+
+  const persistedNewAssetIncorporation = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT d.status || ':' || d.version || ':' || d.inventory_asset_id || ':' ||
+      a.name || ':' || a.asset_type || ':' || a.status || ':' || a.version || ':' ||
+      (SELECT count(*) FROM inventory.outbox_events e
+       WHERE e.resource_id = a.id AND e.event_type = 'ASSET_CREATED'
+         AND e.event_version = '1.0' AND e.producer_module = 'INVENTORY'
+         AND e.resource_type = 'ASSET' AND e.resource_version = 0 AND e.payload = '{}'::jsonb) || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events e
+       WHERE e.resource_id = d.discovered_device_id
+         AND e.event_type = 'DISCOVERED_DEVICE_INCORPORATED'
+         AND e.event_version = '1.0' AND e.producer_module = 'DISCOVERY'
+         AND e.resource_type = 'DISCOVERED_DEVICE' AND e.resource_version = 1
+         AND e.payload = jsonb_build_object('previousStatus', 'UNREVIEWED',
+           'newStatus', 'INCORPORATED', 'assetId', a.id::text))
+      FROM discovery.discovered_devices d
+      JOIN inventory.assets a ON a.id = d.inventory_asset_id
+      WHERE d.discovered_device_id = '${createdAndIncorporatedDevice.discoveredDeviceId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedNewAssetIncorporation).toBe(
+    `INCORPORATED:1:${createdAndIncorporatedDevice.assetId}:${newAssetName}:NETWORK_DEVICE:ACTIVE:0:1:1`,
+  );
+  const countsBeforeRepeat = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT
+      (SELECT count(*) FROM inventory.assets) || ':' ||
+      (SELECT count(*) FROM inventory.outbox_events WHERE event_type = 'ASSET_CREATED') || ':' ||
+      (SELECT count(*) FROM inventory.assets WHERE name = '${newAssetName}') || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events
+       WHERE resource_id = '${createdAndIncorporatedDevice.discoveredDeviceId}'
+         AND event_type = 'DISCOVERED_DEVICE_INCORPORATED')`,
+  ], { encoding: "utf8" }).trim();
+
+  const repeatedNewAssetIncorporation = await page.evaluate(async ({ api, jobId, deviceId, csrf, name }) => {
+    const response = await fetch(
+      `${api}/api/v1/discovery-jobs/${jobId}/discovered-devices/${deviceId}/incorporate-new-asset`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        body: JSON.stringify({ name, assetType: "NETWORK_DEVICE", expectedVersion: 0 }),
+      },
+    );
+    return response.status;
+  }, {
+    api: backendUrl!,
+    jobId: createdJob.jobId,
+    deviceId: createdAndIncorporatedDevice.discoveredDeviceId,
+    csrf: createdAndIncorporatedResponse.request().headers()["x-csrf-token"],
+    name: newAssetName,
+  });
+  expect(repeatedNewAssetIncorporation).toBe(409);
+  const countsAfterRepeat = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT
+      (SELECT count(*) FROM inventory.assets) || ':' ||
+      (SELECT count(*) FROM inventory.outbox_events WHERE event_type = 'ASSET_CREATED') || ':' ||
+      (SELECT count(*) FROM inventory.assets WHERE name = '${newAssetName}') || ':' ||
+      (SELECT count(*) FROM discovery.outbox_events
+       WHERE resource_id = '${createdAndIncorporatedDevice.discoveredDeviceId}'
+         AND event_type = 'DISCOVERED_DEVICE_INCORPORATED')`,
+  ], { encoding: "utf8" }).trim();
+  expect(countsAfterRepeat).toBe(countsBeforeRepeat);
 
   await page.reload();
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();
