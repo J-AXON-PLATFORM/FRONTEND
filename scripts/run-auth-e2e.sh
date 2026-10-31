@@ -12,6 +12,7 @@ mailbox_volume="${owner}-mailboxes"
 tasks_volume="${owner}-tasks"
 discovery_jobs_volume="${owner}-discovery-jobs"
 discovery_results_volume="${owner}-discovery-results"
+ai_storage_volume="${owner}-ai-storage"
 database_image="jaxon-postgres-pgvector-test:${owner}"
 backend_image="jaxon-backend:${owner}"
 backend_port="${JAXON_E2E_BACKEND_PORT:-$((18000 + RANDOM % 1000))}"
@@ -32,6 +33,7 @@ cleanup() {
   docker volume rm "${tasks_volume}" >/dev/null 2>&1 || true
   docker volume rm "${discovery_jobs_volume}" >/dev/null 2>&1 || true
   docker volume rm "${discovery_results_volume}" >/dev/null 2>&1 || true
+  docker volume rm "${ai_storage_volume}" >/dev/null 2>&1 || true
   docker image rm "${database_image}" >/dev/null 2>&1 || true
   docker image rm "${backend_image}" >/dev/null 2>&1 || true
   rm -rf "${work_dir}"
@@ -52,13 +54,17 @@ fi
 docker build --file "${backend_dir}/docker/postgres-pgvector.Dockerfile" \
   --label "com.jaxon.resource-owner=${owner}" \
   --tag "${database_image}" "${backend_dir}"
+docker volume create --label "com.jaxon.resource-owner=${owner}" "${ai_storage_volume}" >/dev/null
 docker run --detach --rm --name "${database_container}" \
   --label "com.jaxon.resource-owner=${owner}" \
   --publish 127.0.0.1::5432 \
+  --mount "source=${ai_storage_volume},target=/jaxon-ai-storage" \
   --env POSTGRES_DB=jaxon_e2e \
   --env POSTGRES_USER=jaxon_e2e \
   --env POSTGRES_PASSWORD="db-${owner}" \
   "${database_image}" >/dev/null
+docker exec --user 0 "${database_container}" sh -c \
+  'chown 10001:10001 /jaxon-ai-storage && chmod 700 /jaxon-ai-storage'
 "${backend_dir}/docker/sftpgo/build-local.sh"
 docker volume create --label "com.jaxon.resource-owner=${owner}" "${mailbox_volume}" >/dev/null
 docker volume create --label "com.jaxon.resource-owner=${owner}" "${tasks_volume}" >/dev/null
@@ -101,6 +107,7 @@ export JAXON_IDENTITY_BOOTSTRAP_ENABLED=true
 export JAXON_IDENTITY_BOOTSTRAP_USERNAME="${JAXON_E2E_USERNAME}"
 export JAXON_IDENTITY_BOOTSTRAP_PASSWORD="${JAXON_E2E_PASSWORD}"
 export JAXON_FRONTEND_ORIGIN="http://localhost:${frontend_port}"
+export JAXON_AI_DOCUMENT_STORAGE_ROOT=/srv/jaxon/ai-documents
 export JAXON_SFTP_ENABLED=true
 export JAXON_SFTPGO_ADMIN_API_URL="http://localhost:${sftpgo_api_port}/api/v2"
 export JAXON_SFTPGO_ADMIN_USERNAME=jaxon-e2e-provisioner
@@ -128,6 +135,7 @@ docker run --detach --name "${backend_container}" \
   --mount "source=${tasks_volume},target=/srv/sftpgo/tasks" \
   --mount "source=${discovery_jobs_volume},target=/srv/sftpgo/discovery-jobs" \
   --mount "source=${discovery_results_volume},target=/srv/sftpgo/discovery-results" \
+  --mount "source=${ai_storage_volume},target=/srv/jaxon/ai-documents" \
   --env JAXON_DB_URL \
   --env JAXON_DB_USERNAME \
   --env JAXON_DB_PASSWORD \
@@ -135,6 +143,7 @@ docker run --detach --name "${backend_container}" \
   --env JAXON_IDENTITY_BOOTSTRAP_USERNAME \
   --env JAXON_IDENTITY_BOOTSTRAP_PASSWORD \
   --env JAXON_FRONTEND_ORIGIN \
+  --env JAXON_AI_DOCUMENT_STORAGE_ROOT \
   --env JAXON_SFTP_ENABLED \
   --env JAXON_SFTPGO_ADMIN_API_URL \
   --env JAXON_SFTPGO_ADMIN_USERNAME \
@@ -168,6 +177,7 @@ curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness
 export NEXT_PUBLIC_JAXON_API_URL="http://localhost:${backend_port}/api/v1"
 export JAXON_E2E_BACKEND_URL="http://localhost:${backend_port}"
 export JAXON_E2E_DATABASE_CONTAINER="${database_container}"
+export JAXON_E2E_AI_STORAGE_ROOT=/jaxon-ai-storage
 export JAXON_E2E_SFTPGO_CONTAINER="${sftpgo_container}"
 export JAXON_E2E_FRONTEND_URL="http://localhost:${frontend_port}"
 export JAXON_E2E_AUTOMATION_DIR="${automation_dir}"

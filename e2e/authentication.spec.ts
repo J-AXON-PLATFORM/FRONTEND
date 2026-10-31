@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,15 +15,18 @@ const agentStateDir = process.env.JAXON_E2E_AGENT_STATE_DIR;
 const sftpGoApiUrl = process.env.JAXON_SFTPGO_ADMIN_API_URL;
 const sftpGoAdminUsername = process.env.JAXON_SFTPGO_ADMIN_USERNAME;
 const sftpGoAdminPassword = process.env.JAXON_SFTPGO_ADMIN_PASSWORD;
+const aiStorageRoot = process.env.JAXON_E2E_AI_STORAGE_ROOT;
 
 test.beforeAll(() => {
   if (!username || !password || !backendUrl || !databaseContainer || !sftpGoContainer || !automationDir
     || !agentStateDir || !sftpGoApiUrl || !sftpGoAdminUsername || !sftpGoAdminPassword) {
     throw new Error("E2E identity, backend, database, SFTPGo, and Agent configuration are required");
   }
+  if (!aiStorageRoot) throw new Error("E2E AI document storage configuration is required");
 });
 
 test("logs in, manages a persisted asset, and enforces the security boundary", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto("/login");
   await page.getByLabel("Usuario").fill(username!);
   await page.getByLabel("Contraseña").fill(password!);
@@ -32,6 +36,170 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();
   await expect(page.getByText("IT OPERATOR")).toBeVisible();
   await expect(page.getByText("SYSTEM ADMIN")).toBeVisible();
+
+  const aiWorkspace = page.getByRole("region", { name: "Fuentes documentales" });
+  await expect(aiWorkspace).toBeVisible();
+  await expect(aiWorkspace.getByText("No hay fuentes registradas.")).toBeVisible();
+  const aiName = `E2E Operations Handbook ${Date.now()}`;
+  const aiContent = Buffer.from("J-AXON E2E operations handbook\nStrict UTF-8: valid.\n", "utf8");
+  await aiWorkspace.getByLabel("Nombre").fill(aiName);
+
+  await aiWorkspace.getByLabel("Archivo de texto").setInputFiles({
+    name: "wrong-media.bin",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("plain bytes"),
+  });
+  await aiWorkspace.getByRole("button", { name: "Registrar fuente" }).click();
+  await expect(aiWorkspace.getByRole("alert")).toContainText("exactamente el tipo text/plain");
+  await expect(aiWorkspace.getByLabel("Nombre")).toHaveValue(aiName);
+
+  await aiWorkspace.getByLabel("Archivo de texto").setInputFiles({
+    name: "invalid-utf8.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from([0xc3, 0x28]),
+  });
+  await aiWorkspace.getByRole("button", { name: "Registrar fuente" }).click();
+  await expect(aiWorkspace.getByRole("alert")).toContainText("UTF-8 válido");
+  await expect(aiWorkspace.getByLabel("Nombre")).toHaveValue(aiName);
+
+  await aiWorkspace.getByLabel("Archivo de texto").setInputFiles({
+    name: "oversized.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.alloc(1024 * 1024 + 1, 0x61),
+  });
+  await aiWorkspace.getByRole("button", { name: "Registrar fuente" }).click();
+  await expect(aiWorkspace.getByRole("alert")).toContainText("superar 1 MiB");
+  await expect(aiWorkspace.getByLabel("Nombre")).toHaveValue(aiName);
+
+  await aiWorkspace.getByLabel("Archivo de texto").setInputFiles({
+    name: "operations.txt",
+    mimeType: "text/plain",
+    buffer: aiContent,
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  const createAiSourceResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/ai/sources") && response.request().method() === "POST"
+  ));
+  const firstAiPageResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith("/api/v1/ai/sources")
+      && response.request().method() === "GET"
+      && url.searchParams.get("page") === "0"
+      && url.searchParams.get("size") === "20";
+  });
+  const aiDetailResponsePromise = page.waitForResponse((response) => (
+    /\/api\/v1\/ai\/sources\/[0-9a-f-]{36}$/.test(new URL(response.url()).pathname)
+      && response.request().method() === "GET"
+  ));
+  await aiWorkspace.getByRole("button", { name: "Registrar fuente" }).click();
+  const createdAiResponse = await createAiSourceResponse;
+  expect(createdAiResponse.status()).toBe(201);
+  expect(createdAiResponse.request().headers()["content-type"]).toMatch(/^multipart\/form-data; boundary=/);
+  const createdAiSource = await createdAiResponse.json() as {
+    sourceId: string;
+    name: string;
+    mediaType: string;
+    sizeBytes: number;
+    sha256: string;
+    status: string;
+    version: number;
+    createdByUserId: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  expect(Object.keys(createdAiSource).sort()).toEqual([
+    "createdAt", "createdByUserId", "mediaType", "name", "sha256", "sizeBytes",
+    "sourceId", "status", "updatedAt", "version",
+  ]);
+  expect(createdAiSource).toMatchObject({
+    name: aiName,
+    mediaType: "text/plain",
+    sizeBytes: aiContent.length,
+    sha256: createHash("sha256").update(aiContent).digest("hex"),
+    status: "PENDING",
+    version: 0,
+  });
+  expect((await firstAiPageResponse).status()).toBe(200);
+  const aiDetailResponse = await aiDetailResponsePromise;
+  expect(aiDetailResponse.url()).toContain(createdAiSource.sourceId);
+  expect(aiDetailResponse.status()).toBe(200);
+  expect(await aiDetailResponse.json()).toEqual(createdAiSource);
+  const aiDetail = aiWorkspace.getByRole("article", { name: "Detalle de fuente documental" });
+  await expect(aiDetail).toContainText(aiName);
+  await expect(aiDetail).toContainText("PENDING · versión 0");
+  await expect(aiDetail).toContainText(createdAiSource.sha256);
+  await expect(aiWorkspace.getByLabel("Nombre")).toHaveValue("");
+  await expect(aiWorkspace.getByLabel("Archivo de texto")).toHaveValue("");
+  await expect(aiWorkspace.getByRole("link")).toHaveCount(0);
+
+  const adminSession = await page.evaluate(async (api) => {
+    const response = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
+    return response.json() as Promise<{ csrfToken: string }>;
+  }, backendUrl!);
+  const rejectedAiRequests = await page.evaluate(async ({ api, csrf }) => {
+    const request = async (content: Blob, token?: string) => {
+      const body = new FormData();
+      body.append("name", "Rejected E2E source");
+      body.append("file", content, "rejected.txt");
+      const response = await fetch(`${api}/api/v1/ai/sources`, {
+        method: "POST",
+        credentials: "include",
+        headers: token ? { "X-CSRF-Token": token } : undefined,
+        body,
+      });
+      return response.status;
+    };
+    return {
+      csrf: await request(new Blob(["valid"], { type: "text/plain" })),
+      media: await request(new Blob(["valid"], { type: "application/octet-stream" }), csrf),
+      utf8: await request(new Blob([new Uint8Array([0xc3, 0x28])], { type: "text/plain" }), csrf),
+      size: await request(new Blob([new Uint8Array(1024 * 1024 + 1)], { type: "text/plain" }), csrf),
+    };
+  }, { api: backendUrl!, csrf: adminSession.csrfToken });
+  expect(rejectedAiRequests).toEqual({ csrf: 403, media: 422, utf8: 422, size: 413 });
+
+  const aiStorageKey = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT storage_key FROM ai.document_sources WHERE id = '${createdAiSource.sourceId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(aiStorageKey).toMatch(/^[0-9a-f-]{36}\.txt$/);
+  const persistedAiSource = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT s.status || ':' || s.version || ':' || s.media_type || ':' || s.size_bytes || ':' ||
+      s.sha256 || ':' ||
+      (SELECT count(*) FROM ai.outbox_events e
+       WHERE e.resource_id = s.id AND e.event_type = 'AI_SOURCE_REGISTERED'
+         AND e.event_version = '1.0' AND e.producer_module = 'AI'
+         AND e.resource_type = 'AI_SOURCE' AND e.resource_version = 0
+         AND e.payload = '{"status":"PENDING"}'::jsonb
+         AND NOT e.payload ? 'name' AND NOT e.payload ? 'sha256')
+      FROM ai.document_sources s WHERE s.id = '${createdAiSource.sourceId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedAiSource).toBe(
+    `PENDING:0:text/plain:${aiContent.length}:${createdAiSource.sha256}:1`,
+  );
+  const aiStorageState = execFileSync("docker", [
+    "exec", "--user", "0", databaseContainer!, "stat", "-c", "%a:%u:%g:%s",
+    `${aiStorageRoot}/${aiStorageKey}`,
+  ], { encoding: "utf8" }).trim();
+  expect(aiStorageState).toBe(`600:10001:10001:${aiContent.length}`);
+  const aiStorageRootState = execFileSync("docker", [
+    "exec", "--user", "0", databaseContainer!, "stat", "-c", "%a:%u:%g",
+    aiStorageRoot!,
+  ], { encoding: "utf8" }).trim();
+  expect(aiStorageRootState).toBe("700:10001:10001");
+  const aiTempDir = mkdtempSync(join(tmpdir(), "jaxon-ai-source-"));
+  try {
+    const copiedAiSource = join(aiTempDir, "stored.txt");
+    execFileSync("docker", [
+      "cp", `${databaseContainer}:${aiStorageRoot}/${aiStorageKey}`, copiedAiSource,
+    ]);
+    expect(readFileSync(copiedAiSource)).toEqual(aiContent);
+  } finally {
+    rmSync(aiTempDir, { recursive: true, force: true });
+  }
 
   const scopeName = `E2E authorized network ${Date.now()}`;
   const createScopeResponse = page.waitForResponse((response) => (
@@ -499,7 +667,27 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page.getByRole("heading", { name: "Usuarios humanos" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Activos" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Tickets" })).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fuentes documentales" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Bandeja técnica" })).toBeVisible();
+  const forbiddenAiOperations = await page.evaluate(async ({ api, sourceId }) => {
+    const sessionResponse = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
+    const session = await sessionResponse.json() as { csrfToken: string };
+    const body = new FormData();
+    body.append("name", "Forbidden source");
+    body.append("file", new Blob(["forbidden"], { type: "text/plain" }), "forbidden.txt");
+    const [list, detail, create] = await Promise.all([
+      fetch(`${api}/api/v1/ai/sources?page=0&size=20`, { credentials: "include" }),
+      fetch(`${api}/api/v1/ai/sources/${sourceId}`, { credentials: "include" }),
+      fetch(`${api}/api/v1/ai/sources`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "X-CSRF-Token": session.csrfToken },
+        body,
+      }),
+    ]);
+    return { list: list.status, detail: detail.status, create: create.status };
+  }, { api: backendUrl!, sourceId: createdAiSource.sourceId });
+  expect(forbiddenAiOperations).toEqual({ list: 403, detail: 403, create: 403 });
   const supportLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
   ));

@@ -423,6 +423,35 @@ h1 {
 .scope-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; }
 .scope-pagination button { min-height: 2.7rem; color: #285f51; border: 1px solid #285f51; background: transparent; }
 .executor-workspace { border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.ai-source-workspace { width: min(100%, 76rem); margin: 5rem auto 0; border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.ai-heading { border-bottom-color: #5d3f78; }
+.ai-source-grid { display: grid; grid-template-columns: minmax(18rem, 0.78fr) minmax(22rem, 1.22fr); gap: clamp(1.25rem, 4vw, 3.5rem); margin-top: 2rem; }
+.ai-source-form, .ai-source-list, .ai-source-detail { border-top: 0.45rem solid #5d3f78; padding: 1.5rem; background: var(--panel); }
+.ai-source-form { display: grid; align-self: start; gap: 1.25rem; }
+.ai-source-form .field small { color: var(--muted); line-height: 1.45; }
+.ai-source-form > button { min-height: 3.25rem; border: 0; padding: 0.75rem 1rem; color: white; background: #5d3f78; font-weight: 800; cursor: pointer; }
+.ai-source-form > button:hover:not(:disabled) { background: var(--dark); }
+.ai-source-form > button:disabled { cursor: not-allowed; opacity: 0.55; }
+.ai-source-list { display: grid; align-content: start; gap: 1rem; }
+.ai-source-list ul { display: grid; gap: 0.65rem; margin: 0; padding: 0; list-style: none; }
+.ai-source-list li > button { display: flex; width: 100%; align-items: start; justify-content: space-between; gap: 1rem; border: 1px solid var(--line); border-left: 0.35rem solid #5d3f78; padding: 1rem; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
+.ai-source-list li > button:hover, .ai-source-list li > button[aria-pressed="true"] { color: white; background: var(--dark); }
+.ai-source-list li > button span:first-child { display: grid; gap: 0.3rem; min-width: 0; }
+.ai-source-list li > button strong, .ai-source-list li > button small { overflow-wrap: anywhere; }
+.ai-source-list li > button small { color: var(--muted); }
+.ai-source-list li > button[aria-pressed="true"] small { color: #d9d1df; }
+.ai-source-list li > button span:last-child { flex: 0 0 auto; color: #5d3f78; font-family: ui-monospace, monospace; font-size: 0.72rem; font-weight: 850; }
+.ai-source-list li > button[aria-pressed="true"] span:last-child { color: #e0cceb; }
+.ai-source-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.ai-source-pagination button { min-height: 2.7rem; border: 1px solid #5d3f78; padding: 0.65rem 1rem; color: #5d3f78; background: transparent; font-weight: 800; cursor: pointer; }
+.ai-source-pagination button:disabled { cursor: not-allowed; opacity: 0.45; }
+.ai-source-pagination span { color: var(--muted); font-size: 0.78rem; }
+.ai-source-detail { margin-top: 1rem; }
+.ai-source-detail h3 { margin: 0.45rem 0 1.5rem; font-size: clamp(1.8rem, 5vw, 3rem); letter-spacing: -0.05em; overflow-wrap: anywhere; }
+.ai-source-detail dl { margin: 0; }
+.ai-source-detail dl div { display: grid; grid-template-columns: 8rem 1fr; gap: 1rem; border-top: 1px solid var(--line); padding: 0.75rem 0; }
+.ai-source-detail dt { color: var(--muted); font-size: 0.75rem; font-weight: 800; text-transform: uppercase; }
+.ai-source-detail dd { margin: 0; overflow-wrap: anywhere; }
 .discovery-job-workspace { border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
 .discovery-job-grid { display: grid; grid-template-columns: minmax(17rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1rem; margin-top: 2rem; }
 .discovery-job-form, .discovery-job-result { display: grid; align-content: start; gap: 1rem; padding: 1.5rem; border: 1px solid var(--line); }
@@ -527,6 +556,10 @@ h1 {
   .scope-card { align-items: stretch; flex-direction: column; }
   .scope-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .executor-grid { grid-template-columns: 1fr; }
+  .ai-source-grid { grid-template-columns: 1fr; }
+  .ai-source-list li > button { align-items: stretch; flex-direction: column; }
+  .ai-source-pagination { align-items: stretch; flex-direction: column; text-align: center; }
+  .ai-source-detail dl div { grid-template-columns: 1fr; gap: 0.25rem; }
   .discovery-job-grid { grid-template-columns: 1fr; }
   .discovered-devices > header, .discovered-device-title { display: grid; }
   .discovered-device-list dl { grid-template-columns: 1fr; }
