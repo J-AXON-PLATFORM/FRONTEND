@@ -34,7 +34,6 @@ const minimatchGraph = {
   "@eslint-community/eslint-utils": {
     direct: false,
     via: ["eslint"],
-    range: "*",
     nodes: [
       "node_modules/@eslint-community/eslint-utils",
       "node_modules/@next/eslint-plugin-next/node_modules/@eslint-community/eslint-utils",
@@ -43,19 +42,16 @@ const minimatchGraph = {
   "@eslint/config-array": {
     direct: false,
     via: ["minimatch"],
-    range: "*",
     nodes: ["node_modules/@eslint/config-array"],
   },
   "@eslint/eslintrc": {
     direct: false,
     via: ["minimatch"],
-    range: "0.0.1 || >=0.1.1",
     nodes: ["node_modules/@eslint/eslintrc"],
   },
   "@next/eslint-plugin-next": {
     direct: false,
     via: ["@eslint-community/eslint-utils"],
-    range: ">=16.3.0-canary.0",
     nodes: ["node_modules/@next/eslint-plugin-next"],
   },
   "@typescript-eslint/eslint-plugin": {
@@ -66,37 +62,31 @@ const minimatchGraph = {
       "@typescript-eslint/utils",
       "eslint",
     ],
-    range: "*",
     nodes: ["node_modules/@typescript-eslint/eslint-plugin"],
   },
   "@typescript-eslint/parser": {
     direct: false,
     via: ["@typescript-eslint/typescript-estree", "eslint"],
-    range: "*",
     nodes: ["node_modules/@typescript-eslint/parser"],
   },
   "@typescript-eslint/type-utils": {
     direct: false,
     via: ["@typescript-eslint/typescript-estree", "@typescript-eslint/utils", "eslint"],
-    range: ">=5.9.2-alpha.0",
     nodes: ["node_modules/@typescript-eslint/type-utils"],
   },
   "@typescript-eslint/typescript-estree": {
     direct: false,
     via: ["minimatch"],
-    range: ">=6.16.0",
     nodes: ["node_modules/@typescript-eslint/typescript-estree"],
   },
   "@typescript-eslint/utils": {
     direct: false,
     via: ["@eslint-community/eslint-utils", "@typescript-eslint/typescript-estree", "eslint"],
-    range: "*",
     nodes: ["node_modules/@typescript-eslint/utils"],
   },
   eslint: {
     direct: true,
     via: ["@eslint-community/eslint-utils", "@eslint/config-array", "@eslint/eslintrc", "minimatch"],
-    range: "0.7.1 - 2.0.0-rc.1 || >=4.1.0",
     nodes: ["node_modules/eslint"],
   },
   "eslint-config-next": {
@@ -109,25 +99,21 @@ const minimatchGraph = {
       "eslint-plugin-react",
       "typescript-eslint",
     ],
-    range: ">=10.2.1-canary.2",
     nodes: ["node_modules/eslint-config-next"],
   },
   "eslint-plugin-import": {
     direct: false,
     via: ["minimatch"],
-    range: ">=1.15.0",
     nodes: ["node_modules/eslint-config-next/node_modules/eslint-plugin-import"],
   },
   "eslint-plugin-jsx-a11y": {
     direct: false,
     via: ["minimatch"],
-    range: ">=6.5.0",
     nodes: ["node_modules/eslint-config-next/node_modules/eslint-plugin-jsx-a11y"],
   },
   "eslint-plugin-react": {
     direct: false,
     via: ["minimatch"],
-    range: ">=7.23.0",
     nodes: ["node_modules/eslint-config-next/node_modules/eslint-plugin-react"],
   },
   minimatch: {
@@ -145,7 +131,6 @@ const minimatchGraph = {
       "@typescript-eslint/utils",
       "eslint",
     ],
-    range: "*",
     nodes: ["node_modules/typescript-eslint"],
   },
 };
@@ -325,7 +310,7 @@ function validateMinimatchGraph(vulnerabilities, combined) {
       vulnerability.severity !== expectedSeverity ||
       vulnerability.isDirect !== expected.direct ||
       !sameStringSet(vulnerability.via.map(advisoryId), expectedVia) ||
-      vulnerability.range !== expected.range ||
+      (name === "minimatch" && vulnerability.range !== expected.range) ||
       !sameStringSet(vulnerability.nodes, expected.nodes)
     ) {
       return `${name} changed in the minimatch exception graph.`;
@@ -422,7 +407,7 @@ function makeSelfTestFixture(profile = "minimatch") {
         isDirect: expected.direct,
         via: [...expected.via],
         effects: [],
-        range: expected.range,
+        ...(name === "minimatch" ? { range: expected.range } : {}),
         nodes: [...expected.nodes],
         fixAvailable: true,
       };
@@ -502,6 +487,11 @@ function runSelfTest() {
   if (validateAll(reorderedFixture).error) {
     fail("self-test positive case reordered audit sets failed.");
   }
+  const derivedRangeFixture = makeSelfTestFixture();
+  derivedRangeFixture.audit.vulnerabilities["@typescript-eslint/type-utils"].range = "unstable-derived-range";
+  if (validateAll(derivedRangeFixture).error) {
+    fail("self-test positive case variable derived range failed.");
+  }
 
   const negativeCases = [
     ["another advisory", (fixture) => {
@@ -509,6 +499,9 @@ function runSelfTest() {
     }],
     ["severity", (fixture) => {
       fixture.audit.vulnerabilities.minimatch.severity = "high";
+    }],
+    ["root advisory range", (fixture) => {
+      fixture.audit.vulnerabilities.minimatch.range = "<12.0.0";
     }],
     ["lock version", (fixture) => {
       fixture.packageLock.packages["node_modules/minimatch"].version = "11.0.1";
@@ -535,7 +528,7 @@ function runSelfTest() {
     mutate(fixture);
     if (!validateAll(fixture).error) fail(`self-test negative case ${name} was accepted.`);
   }
-  console.log("Dependency audit verifier self-test passed (5 positive and 8 negative cases).");
+  console.log("Dependency audit verifier self-test passed (6 positive and 9 negative cases).");
 }
 
 if (process.argv.slice(2).includes("--self-test")) {
