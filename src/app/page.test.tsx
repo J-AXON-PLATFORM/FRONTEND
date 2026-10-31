@@ -34,6 +34,7 @@ describe("HomePage", () => {
     expect(screen.getByText("SYSTEM ADMIN")).toBeDefined();
     expect(screen.getByRole("heading", { name: "Discovery Executors" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Fuentes documentales" })).toBeDefined();
   });
 
   it("clears cached state and redirects when the session is absent", async () => {
@@ -82,6 +83,7 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "Activos" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Tickets" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Discovery Jobs" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Fuentes documentales" })).toBeNull();
     expect(await screen.findByRole("heading", { name: "Bandeja técnica" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeDefined();
   });
@@ -113,6 +115,7 @@ describe("HomePage", () => {
     expect(await screen.findByRole("heading", { name: "Inventory.Operator" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Ámbitos autorizados" })).toBeDefined();
     expect(screen.queryByRole("heading", { name: "Discovery Executors" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Fuentes documentales" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/discovery/executors"))).toBe(true);
