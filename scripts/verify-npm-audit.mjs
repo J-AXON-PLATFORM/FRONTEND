@@ -187,6 +187,14 @@ function sameValues(actual, expected) {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+function sameStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    sameValues([...actual].sort(), [...expected].sort())
+  );
+}
+
 function advisoryId(entry) {
   return typeof entry === "string" ? entry : entry?.url?.split("/").at(-1);
 }
@@ -282,7 +290,7 @@ function validateBracesGraph(vulnerabilities, combined) {
       !vulnerability ||
       vulnerability.severity !== expectedSeverity ||
       vulnerability.isDirect !== expected.direct ||
-      !sameValues(vulnerability.via.map(advisoryId), expectedVia)
+      !sameStringSet(vulnerability.via.map(advisoryId), expectedVia)
     ) {
       return `${name} changed in the braces exception graph.`;
     }
@@ -316,9 +324,9 @@ function validateMinimatchGraph(vulnerabilities, combined) {
       vulnerability.name !== name ||
       vulnerability.severity !== expectedSeverity ||
       vulnerability.isDirect !== expected.direct ||
-      !sameValues(vulnerability.via.map(advisoryId), expectedVia) ||
+      !sameStringSet(vulnerability.via.map(advisoryId), expectedVia) ||
       vulnerability.range !== expected.range ||
-      !sameValues(vulnerability.nodes, expected.nodes)
+      !sameStringSet(vulnerability.nodes, expected.nodes)
     ) {
       return `${name} changed in the minimatch exception graph.`;
     }
@@ -488,6 +496,12 @@ function runSelfTest() {
       fail(`self-test positive case ${profile} failed: ${result.error ?? result.profile}`);
     }
   }
+  const reorderedFixture = makeSelfTestFixture();
+  reorderedFixture.audit.vulnerabilities["@typescript-eslint/type-utils"].via.reverse();
+  reorderedFixture.audit.vulnerabilities.minimatch.nodes.reverse();
+  if (validateAll(reorderedFixture).error) {
+    fail("self-test positive case reordered audit sets failed.");
+  }
 
   const negativeCases = [
     ["another advisory", (fixture) => {
@@ -501,6 +515,9 @@ function runSelfTest() {
     }],
     ["lock path", (fixture) => {
       fixture.packageLock.packages["node_modules/extra/node_modules/minimatch"] = { version: "3.1.5", dev: true };
+    }],
+    ["additional transitive path", (fixture) => {
+      fixture.audit.vulnerabilities["@typescript-eslint/type-utils"].via.push("unexpected");
     }],
     ["production presence", (fixture) => {
       fixture.productionTree.dependencies.minimatch = { version: "10.2.6" };
@@ -518,7 +535,7 @@ function runSelfTest() {
     mutate(fixture);
     if (!validateAll(fixture).error) fail(`self-test negative case ${name} was accepted.`);
   }
-  console.log("Dependency audit verifier self-test passed (4 positive and 7 negative cases).");
+  console.log("Dependency audit verifier self-test passed (5 positive and 8 negative cases).");
 }
 
 if (process.argv.slice(2).includes("--self-test")) {
