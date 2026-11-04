@@ -8,6 +8,7 @@ owner="jaxon-auth-e2e-$RANDOM-$$"
 database_container="${owner}-postgres"
 sftpgo_container="${owner}-sftpgo"
 backend_container="${owner}-backend"
+unavailable_backend_container="${owner}-backend-ai-unavailable"
 mailbox_volume="${owner}-mailboxes"
 tasks_volume="${owner}-tasks"
 discovery_jobs_volume="${owner}-discovery-jobs"
@@ -16,10 +17,13 @@ ai_storage_volume="${owner}-ai-storage"
 database_image="jaxon-postgres-pgvector-test:${owner}"
 backend_image="jaxon-backend:${owner}"
 backend_port="${JAXON_E2E_BACKEND_PORT:-$((18000 + RANDOM % 1000))}"
+unavailable_backend_port="$((backend_port + 1000))"
 frontend_port="${JAXON_E2E_FRONTEND_PORT:-$((13000 + RANDOM % 1000))}"
 work_dir="$(mktemp -d)"
 backend_pid=""
 frontend_pid=""
+embedding_model_path="${JAXON_AI_EMBEDDING_MODEL_PATH:-}"
+embedding_tokenizer_path="${JAXON_AI_EMBEDDING_TOKENIZER_PATH:-}"
 
 cleanup() {
   if [[ -n "${frontend_pid}" ]]; then kill -- "-${frontend_pid}" 2>/dev/null || true; fi
@@ -29,6 +33,7 @@ cleanup() {
   docker rm --force "${database_container}" >/dev/null 2>&1 || true
   docker rm --force "${sftpgo_container}" >/dev/null 2>&1 || true
   docker rm --force "${backend_container}" >/dev/null 2>&1 || true
+  docker rm --force "${unavailable_backend_container}" >/dev/null 2>&1 || true
   docker volume rm "${mailbox_volume}" >/dev/null 2>&1 || true
   docker volume rm "${tasks_volume}" >/dev/null 2>&1 || true
   docker volume rm "${discovery_jobs_volume}" >/dev/null 2>&1 || true
@@ -42,9 +47,15 @@ trap cleanup EXIT
 
 test -f "${backend_dir}/pom.xml"
 test -f "${automation_dir}/pyproject.toml"
+test -f "${embedding_model_path}"
+test -f "${embedding_tokenizer_path}"
 uv --project "${automation_dir}" lock --check
 if curl --silent --max-time 1 "http://localhost:${backend_port}" >/dev/null 2>&1; then
   printf 'Backend test port %s is already in use\n' "${backend_port}" >&2
+  exit 1
+fi
+if curl --silent --max-time 1 "http://localhost:${unavailable_backend_port}" >/dev/null 2>&1; then
+  printf 'Unavailable backend test port %s is already in use\n' "${unavailable_backend_port}" >&2
   exit 1
 fi
 if curl --silent --max-time 1 "http://localhost:${frontend_port}" >/dev/null 2>&1; then
@@ -136,6 +147,8 @@ docker run --detach --name "${backend_container}" \
   --mount "source=${discovery_jobs_volume},target=/srv/sftpgo/discovery-jobs" \
   --mount "source=${discovery_results_volume},target=/srv/sftpgo/discovery-results" \
   --mount "source=${ai_storage_volume},target=/srv/jaxon/ai-documents" \
+  --mount "type=bind,source=${embedding_model_path},target=/srv/jaxon/ai-model/model.onnx,readonly" \
+  --mount "type=bind,source=${embedding_tokenizer_path},target=/srv/jaxon/ai-model/tokenizer.json,readonly" \
   --env JAXON_DB_URL \
   --env JAXON_DB_USERNAME \
   --env JAXON_DB_PASSWORD \
@@ -144,6 +157,9 @@ docker run --detach --name "${backend_container}" \
   --env JAXON_IDENTITY_BOOTSTRAP_PASSWORD \
   --env JAXON_FRONTEND_ORIGIN \
   --env JAXON_AI_DOCUMENT_STORAGE_ROOT \
+  --env JAXON_AI_EMBEDDING_MODEL_PATH=/srv/jaxon/ai-model/model.onnx \
+  --env JAXON_AI_EMBEDDING_TOKENIZER_PATH=/srv/jaxon/ai-model/tokenizer.json \
+  --env JAXON_AI_INDEXING_POLL_INTERVAL=100ms \
   --env JAXON_SFTP_ENABLED \
   --env JAXON_SFTPGO_ADMIN_API_URL \
   --env JAXON_SFTPGO_ADMIN_USERNAME \
@@ -174,8 +190,37 @@ curl --fail --silent "http://localhost:${backend_port}/actuator/health/readiness
   exit 1
 }
 
+docker run --detach --name "${unavailable_backend_container}" \
+  --label "com.jaxon.resource-owner=${owner}" \
+  --network host \
+  --group-add 65532 \
+  --mount "source=${ai_storage_volume},target=/srv/jaxon/ai-documents" \
+  --env JAXON_DB_URL \
+  --env JAXON_DB_USERNAME \
+  --env JAXON_DB_PASSWORD \
+  --env JAXON_IDENTITY_BOOTSTRAP_ENABLED=false \
+  --env JAXON_FRONTEND_ORIGIN \
+  --env JAXON_AI_DOCUMENT_STORAGE_ROOT \
+  --env JAXON_AI_INDEXING_ENABLED=false \
+  --env JAXON_SFTP_ENABLED=false \
+  --env SERVER_PORT="${unavailable_backend_port}" \
+  "${backend_image}" >/dev/null
+for _ in $(seq 1 90); do
+  docker inspect "${unavailable_backend_container}" >/dev/null 2>&1 || {
+    docker logs "${unavailable_backend_container}" >&2
+    exit 1
+  }
+  if curl --fail --silent "http://localhost:${unavailable_backend_port}/actuator/health/readiness" >/dev/null; then break; fi
+  sleep 1
+done
+curl --fail --silent "http://localhost:${unavailable_backend_port}/actuator/health/readiness" >/dev/null || {
+  docker logs "${unavailable_backend_container}" >&2
+  exit 1
+}
+
 export NEXT_PUBLIC_JAXON_API_URL="http://localhost:${backend_port}/api/v1"
 export JAXON_E2E_BACKEND_URL="http://localhost:${backend_port}"
+export JAXON_E2E_UNAVAILABLE_BACKEND_URL="http://localhost:${unavailable_backend_port}"
 export JAXON_E2E_DATABASE_CONTAINER="${database_container}"
 export JAXON_E2E_AI_STORAGE_ROOT=/jaxon-ai-storage
 export JAXON_E2E_SFTPGO_CONTAINER="${sftpgo_container}"

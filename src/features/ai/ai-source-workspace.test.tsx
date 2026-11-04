@@ -114,6 +114,131 @@ describe("AiSourceWorkspace", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/ai/sources?page=0&size=20"))).toBe(true);
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith(`/ai/sources/${source.sourceId}`))).toBe(true);
   });
+
+  it("confirms indexing once, blocks duplicates, and refetches list and detail after 202", async () => {
+    let resolveIndexing!: (response: Response) => void;
+    let accepted = false;
+    const pendingIndexing = new Promise<Response>((resolve) => { resolveIndexing = resolve; });
+    const indexingSource = { ...source, status: "INDEXING", version: 1 } as const;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/ai/sources/${source.sourceId}/index`) && init?.method === "POST") {
+        return pendingIndexing;
+      }
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) {
+        return Promise.resolve(json(accepted ? indexingSource : source));
+      }
+      if (url.includes("/ai/sources?page=0")) {
+        const item = accepted ? indexingSource : source;
+        return Promise.resolve(json({ ...emptyPageBody(), items: [item], totalElements: 1, totalPages: 1 }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", confirm);
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    const indexButton = await screen.findByRole("button", { name: "Solicitar indexación" });
+    fireEvent.click(indexButton);
+    fireEvent.click(indexButton);
+    await screen.findByRole("button", { name: "Solicitando indexación..." });
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: /Operations handbook/ }).disabled).toBe(true);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/index"))).toHaveLength(1);
+    expect(confirm).toHaveBeenCalledOnce();
+
+    accepted = true;
+    resolveIndexing(json(indexingSource, 202));
+    await screen.findByText("INDEXING · versión 1");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith(`/ai/sources/${source.sourceId}`)).length)
+      .toBeGreaterThanOrEqual(2);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/ai/sources?page=0")).length)
+      .toBeGreaterThanOrEqual(2);
+  });
+
+  it.each([
+    [409, "versión o el estado actual"],
+    [503, "servicio local de indexación no está disponible"],
+  ])("keeps the pending source actionable after indexing error %s", async (status, message) => {
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/index") && init?.method === "POST") return Promise.resolve(problem(status));
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) return Promise.resolve(json(source));
+      return Promise.resolve(json({ ...emptyPageBody(), items: [source], totalElements: 1, totalPages: 1 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Solicitar indexación" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(message);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Solicitar indexación" }).disabled).toBe(false);
+  });
+
+  it("refreshes an indexing source explicitly without periodic polling", async () => {
+    let refreshed = false;
+    const indexingSource = { ...source, status: "INDEXING", version: 1 } as const;
+    const readySource = { ...source, status: "READY", version: 2 } as const;
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) {
+        return Promise.resolve(json(refreshed ? readySource : indexingSource));
+      }
+      return Promise.resolve(json({
+        ...emptyPageBody(),
+        items: [refreshed ? readySource : indexingSource],
+        totalElements: 1,
+        totalPages: 1,
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    await screen.findByText("INDEXING · versión 1");
+    refreshed = true;
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar estado" }));
+
+    await screen.findByText("READY · versión 2");
+    expect(screen.getByRole("button", { name: /Operations handbook/ }).textContent).toContain("READY");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith(`/ai/sources/${source.sourceId}`)))
+      .toHaveLength(2);
+  });
+
+  it("does not show an indexing error on a different selected source", async () => {
+    const secondSource = {
+      ...source,
+      sourceId: "59844482-1d29-4d30-87fd-1bb67a22e050",
+      name: "Security handbook",
+    };
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/index") && init?.method === "POST") return Promise.resolve(problem(503));
+      if (url.endsWith(`/ai/sources/${secondSource.sourceId}`)) return Promise.resolve(json(secondSource));
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) return Promise.resolve(json(source));
+      return Promise.resolve(json({
+        ...emptyPageBody(), items: [source, secondSource], totalElements: 2, totalPages: 1,
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Solicitar indexación" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: /Security handbook/ }));
+    await screen.findByRole("heading", { name: "Security handbook" });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Solicitar indexación" })).toBeTruthy();
+  });
 });
 
 function renderWorkspace() {

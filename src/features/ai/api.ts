@@ -6,8 +6,8 @@ export type AiSource = {
   mediaType: "text/plain";
   sizeBytes: number;
   sha256: string;
-  status: "PENDING";
-  version: 0;
+  status: "PENDING" | "INDEXING" | "READY" | "FAILED" | "DISABLED";
+  version: number;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
@@ -61,6 +61,36 @@ export async function getAiSource(sourceId: string): Promise<AiSource> {
   )));
 }
 
+export async function indexAiSource(
+  sourceId: string,
+  expectedVersion: number,
+  csrfToken: string,
+): Promise<AiSource> {
+  const response = await fetch(
+    `${apiUrl}/ai/sources/${encodeURIComponent(sourceId)}/index`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ expectedVersion }),
+    },
+  );
+  if (response.status !== 202) {
+    if (!response.ok) await read(response);
+    throw new AiSourceContractError();
+  }
+  const accepted = parseAiSource(await read(response));
+  if (accepted.sourceId.toLowerCase() !== sourceId.toLowerCase()
+      || accepted.status !== "INDEXING"
+      || accepted.version !== expectedVersion + 1) {
+    throw new AiSourceContractError();
+  }
+  return accepted;
+}
+
 export function parseAiSource(value: unknown): AiSource {
   if (!isRecord(value)) throw new AiSourceContractError();
   const keys = new Set([
@@ -76,7 +106,7 @@ export function parseAiSource(value: unknown): AiSource {
       || !Number.isSafeInteger(value.sizeBytes)
       || (value.sizeBytes as number) < 0 || (value.sizeBytes as number) > 1_048_576
       || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.sha256)
-      || value.status !== "PENDING" || value.version !== 0
+      || !isAiSourceStatus(value.status) || !isNonNegativeInteger(value.version)
       || typeof value.createdByUserId !== "string" || !UUID_V4.test(value.createdByUserId)
       || !isDateTime(value.createdAt) || !isDateTime(value.updatedAt)) {
     throw new AiSourceContractError();
@@ -133,6 +163,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isAiSourceStatus(value: unknown): value is AiSource["status"] {
+  return value === "PENDING" || value === "INDEXING" || value === "READY"
+    || value === "FAILED" || value === "DISABLED";
 }
 
 function isDateTime(value: unknown): value is string {

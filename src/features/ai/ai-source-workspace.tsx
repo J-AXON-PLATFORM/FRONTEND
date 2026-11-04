@@ -8,6 +8,7 @@ import {
   AiSourceContractError,
   createAiSource,
   getAiSource,
+  indexAiSource,
   listAiSources,
   normalizeAiSourceName,
   type AiSource,
@@ -29,6 +30,7 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
   const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
   const submitLock = useRef(false);
+  const indexLock = useRef(false);
   const [page, setPage] = useState(0);
   const [name, setName] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -70,8 +72,43 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
       submitLock.current = false;
     },
   });
+  const indexing = useMutation({
+    mutationFn: (source: AiSource) => indexAiSource(
+      source.sourceId,
+      source.version,
+      session.csrfToken,
+    ),
+    retry: false,
+    onSuccess: async (accepted) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["users", session.userId, "ai", "sources"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: detailKey(session.userId, accepted.sourceId),
+          exact: true,
+        }),
+      ]);
+    },
+    onError: async (error, source) => {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 409)) {
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["users", session.userId, "ai", "sources"],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: detailKey(session.userId, source.sourceId),
+            exact: true,
+          }),
+        ]);
+      }
+    },
+    onSettled: () => {
+      indexLock.current = false;
+    },
+  });
 
-  const authenticationError = [sources.error, detail.error, creation.error]
+  const authenticationError = [sources.error, detail.error, creation.error, indexing.error]
     .some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
     if (authenticationError) {
@@ -128,6 +165,17 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
   function unlockValidation() {
     submitLock.current = false;
     setValidating(false);
+  }
+
+  function requestIndexing(source: AiSource) {
+    if (source.status !== "PENDING" || indexLock.current) return;
+    indexLock.current = true;
+    indexing.reset();
+    if (!window.confirm(`Indexar la fuente documental “${source.name}” en versión ${source.version}?`)) {
+      indexLock.current = false;
+      return;
+    }
+    indexing.mutate(source);
   }
 
   return (
@@ -188,6 +236,7 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
                 <li key={source.sourceId}>
                   <button
                     type="button"
+                    disabled={indexing.isPending}
                     aria-pressed={selectedSourceId === source.sourceId}
                     onClick={() => setSelectedSourceId(source.sourceId)}
                   >
@@ -212,14 +261,46 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
         <div className="ai-source-detail" aria-live="polite">
           {detail.isPending && <p className="administration-empty">Consultando detalle...</p>}
           {detail.isError && <p className="form-error" role="alert">{sourceError(detail.error, "consultar")}</p>}
-          {detail.data && <AiSourceDetail source={detail.data} />}
+          {detail.data && (
+            <AiSourceDetail
+              source={detail.data}
+              indexing={indexing.isPending && indexing.variables?.sourceId === detail.data.sourceId}
+              indexingError={indexing.isError && indexing.variables?.sourceId === detail.data.sourceId
+                ? indexing.error
+                : null}
+              refreshing={detail.isFetching}
+              onIndex={requestIndexing}
+              onRefresh={() => {
+                void Promise.all([
+                  detail.refetch(),
+                  queryClient.invalidateQueries({
+                    queryKey: ["users", session.userId, "ai", "sources"],
+                  }),
+                ]);
+              }}
+            />
+          )}
         </div>
       )}
     </section>
   );
 }
 
-function AiSourceDetail({ source }: Readonly<{ source: AiSource }>) {
+function AiSourceDetail({
+  source,
+  indexing,
+  indexingError,
+  refreshing,
+  onIndex,
+  onRefresh,
+}: Readonly<{
+  source: AiSource;
+  indexing: boolean;
+  indexingError: Error | null;
+  refreshing: boolean;
+  onIndex: (source: AiSource) => void;
+  onRefresh: () => void;
+}>) {
   return (
     <article aria-label="Detalle de fuente documental">
       <p className="sequence">{source.status} · versión {source.version}</p>
@@ -233,11 +314,28 @@ function AiSourceDetail({ source }: Readonly<{ source: AiSource }>) {
         <div><dt>Creado</dt><dd>{formatUtc(source.createdAt)}</dd></div>
         <div><dt>Actualizado</dt><dd>{formatUtc(source.updatedAt)}</dd></div>
       </dl>
+      {source.status === "PENDING" && (
+        <div className="ai-source-indexing">
+          <p>La indexación crea fragmentos y vectores locales de forma asíncrona.</p>
+          {indexingError && <p className="form-error" role="alert">{sourceError(indexingError, "indexar")}</p>}
+          <button type="button" disabled={indexing} onClick={() => onIndex(source)}>
+            {indexing ? "Solicitando indexación..." : "Solicitar indexación"}
+          </button>
+        </div>
+      )}
+      {source.status !== "PENDING" && (
+        <div className="ai-source-indexing">
+          <p>REST conserva el estado oficial de la indexación.</p>
+          <button type="button" disabled={refreshing} onClick={onRefresh}>
+            {refreshing ? "Actualizando estado..." : "Actualizar estado"}
+          </button>
+        </div>
+      )}
     </article>
   );
 }
 
-function sourceError(error: Error | null, action: "registrar" | "listar" | "consultar") {
+function sourceError(error: Error | null, action: "registrar" | "listar" | "consultar" | "indexar") {
   if (error instanceof AiSourceContractError) {
     return "El servicio devolvió metadata de AI con un formato no válido.";
   }
@@ -245,9 +343,14 @@ function sourceError(error: Error | null, action: "registrar" | "listar" | "cons
   if (error.status === 401) return "La sesión ya no es válida.";
   if (error.status === 403) return "La sesión no autoriza esta operación.";
   if (error.status === 404) return "La fuente documental ya no existe.";
+  if (action === "indexar" && error.status === 409) {
+    return "La versión o el estado actual ya no permite iniciar la indexación.";
+  }
   if (error.status === 413) return "El archivo supera el máximo de 1 MiB.";
   if (error.status === 400 || error.status === 422) return "Revisa el nombre, tipo, tamaño y codificación del archivo.";
-  if (error.status === 503) return "El almacenamiento documental no está disponible.";
+  if (error.status === 503) return action === "indexar"
+    ? "El servicio local de indexación no está disponible."
+    : "El almacenamiento documental no está disponible.";
   return `No fue posible ${action} fuentes documentales.`;
 }
 
