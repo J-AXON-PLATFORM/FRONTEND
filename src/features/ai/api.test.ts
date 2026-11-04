@@ -3,6 +3,7 @@ import {
   AiSourceContractError,
   createAiSource,
   getAiSource,
+  indexAiSource,
   listAiSources,
   parseAiSource,
   parseAiSourcePage,
@@ -34,7 +35,11 @@ describe("AI source API", () => {
 
     expect(() => parseAiSource({ ...source, storageKey: "private.txt" }))
       .toThrow(AiSourceContractError);
-    expect(() => parseAiSource({ ...source, status: "READY" })).toThrow(AiSourceContractError);
+    for (const status of ["PENDING", "INDEXING", "READY", "FAILED", "DISABLED"] as const) {
+      expect(parseAiSource({ ...source, status, version: 4 })).toMatchObject({ status, version: 4 });
+    }
+    expect(() => parseAiSource({ ...source, status: "UNKNOWN" })).toThrow(AiSourceContractError);
+    expect(() => parseAiSource({ ...source, version: -1 })).toThrow(AiSourceContractError);
     expect(() => parseAiSource({ ...source, name: " unnormalized " })).toThrow(AiSourceContractError);
     expect(() => parseAiSource({ ...source, sha256: "A".repeat(64) })).toThrow(AiSourceContractError);
     expect(() => parseAiSource({ ...source, sizeBytes: 1_048_577 })).toThrow(AiSourceContractError);
@@ -80,6 +85,42 @@ describe("AI source API", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       2, `/api/v1/ai/sources/${source.sourceId}`, { credentials: "include" },
     );
+  });
+
+  it("requests indexing with a closed version body and CSRF", async () => {
+    const accepted = { ...source, status: "INDEXING", version: 1 } as const;
+    const fetchMock = vi.fn().mockResolvedValue(json(accepted, 202));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(indexAiSource(source.sourceId, 0, "csrf-token")).resolves.toEqual(accepted);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/ai/sources/${source.sourceId}/index`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": "csrf-token",
+        },
+        body: JSON.stringify({ expectedVersion: 0 }),
+      },
+    );
+  });
+
+  it("rejects a successful indexing response with a status other than 202", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ ...source, status: "INDEXING", version: 1 })));
+
+    await expect(indexAiSource(source.sourceId, 0, "csrf-token")).rejects.toBeInstanceOf(AiSourceContractError);
+  });
+
+  it.each([
+    [{ ...source, sourceId: "59844482-1d29-4d30-87fd-1bb67a22e050", status: "INDEXING", version: 1 }],
+    [{ ...source, status: "READY", version: 1 }],
+    [{ ...source, status: "INDEXING", version: 2 }],
+  ])("rejects an incongruent accepted indexing body", async (body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body, 202)));
+
+    await expect(indexAiSource(source.sourceId, 0, "csrf-token")).rejects.toBeInstanceOf(AiSourceContractError);
   });
 });
 

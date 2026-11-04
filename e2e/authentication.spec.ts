@@ -8,6 +8,7 @@ import { join } from "node:path";
 const username = process.env.JAXON_E2E_USERNAME;
 const password = process.env.JAXON_E2E_PASSWORD;
 const backendUrl = process.env.JAXON_E2E_BACKEND_URL;
+const unavailableBackendUrl = process.env.JAXON_E2E_UNAVAILABLE_BACKEND_URL;
 const databaseContainer = process.env.JAXON_E2E_DATABASE_CONTAINER;
 const sftpGoContainer = process.env.JAXON_E2E_SFTPGO_CONTAINER;
 const automationDir = process.env.JAXON_E2E_AUTOMATION_DIR;
@@ -18,7 +19,7 @@ const sftpGoAdminPassword = process.env.JAXON_SFTPGO_ADMIN_PASSWORD;
 const aiStorageRoot = process.env.JAXON_E2E_AI_STORAGE_ROOT;
 
 test.beforeAll(() => {
-  if (!username || !password || !backendUrl || !databaseContainer || !sftpGoContainer || !automationDir
+  if (!username || !password || !backendUrl || !unavailableBackendUrl || !databaseContainer || !sftpGoContainer || !automationDir
     || !agentStateDir || !sftpGoApiUrl || !sftpGoAdminUsername || !sftpGoAdminPassword) {
     throw new Error("E2E identity, backend, database, SFTPGo, and Agent configuration are required");
   }
@@ -200,6 +201,76 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   } finally {
     rmSync(aiTempDir, { recursive: true, force: true });
   }
+
+  const unavailableIndexing = await page.evaluate(async ({ api, sourceId, csrf }) => {
+    const response = await fetch(`${api}/api/v1/ai/sources/${sourceId}/index`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ expectedVersion: 0 }),
+    });
+    return { status: response.status, body: await response.json() as { code?: string } };
+  }, { api: unavailableBackendUrl!, sourceId: createdAiSource.sourceId, csrf: adminSession.csrfToken });
+  expect(unavailableIndexing).toEqual({ status: 503, body: expect.objectContaining({ code: "AI_INDEXING_UNAVAILABLE" }) });
+  const sourceAfterUnavailable = await page.evaluate(async ({ api, sourceId }) => (
+    await (await fetch(`${api}/api/v1/ai/sources/${sourceId}`, { credentials: "include" })).json()
+  ), { api: backendUrl!, sourceId: createdAiSource.sourceId });
+  expect(sourceAfterUnavailable).toMatchObject({ status: "PENDING", version: 0 });
+
+  page.once("dialog", (dialog) => dialog.accept());
+  const indexAiSourceResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/ai/sources/${createdAiSource.sourceId}/index`)
+      && response.request().method() === "POST"
+  ));
+  const indexedAiDetailResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/ai/sources/${createdAiSource.sourceId}`)
+      && response.request().method() === "GET"
+  ));
+  await aiDetail.getByRole("button", { name: "Solicitar indexación" }).click();
+  const acceptedIndexingResponse = await indexAiSourceResponse;
+  expect(acceptedIndexingResponse.status()).toBe(202);
+  expect(await acceptedIndexingResponse.json()).toMatchObject({
+    sourceId: createdAiSource.sourceId,
+    status: "INDEXING",
+    version: 1,
+  });
+  expect((await indexedAiDetailResponse).status()).toBe(200);
+  await expect(aiDetail.getByText(/(?:INDEXING|READY) · versión [12]/)).toBeVisible();
+
+  const rejectedIndexRequests = await page.evaluate(async ({ api, sourceId, csrf }) => {
+    const request = async (token?: string) => (await fetch(`${api}/api/v1/ai/sources/${sourceId}/index`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "X-CSRF-Token": token } : {}),
+      },
+      body: JSON.stringify({ expectedVersion: 0 }),
+    })).status;
+    return { csrf: await request(), stale: await request(csrf) };
+  }, { api: backendUrl!, sourceId: createdAiSource.sourceId, csrf: adminSession.csrfToken });
+  expect(rejectedIndexRequests).toEqual({ csrf: 403, stale: 409 });
+
+  await expect.poll(() => execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT s.status || ':' || s.version || ':' ||
+      (SELECT count(*) FROM ai.source_chunks c WHERE c.source_id = s.id
+        AND c.token_count <= 480 AND c.end_token - c.start_token = c.token_count
+        AND c.model_id = 'intfloat/multilingual-e5-small'
+        AND c.model_revision = '614241f622f53c4eeff9890bdc4f31cfecc418b3'
+        AND c.chunker_version = 'token-480-overlap-72-v1') || ':' ||
+      (SELECT count(*) FROM ai.outbox_events e WHERE e.resource_id = s.id
+        AND e.event_type = 'AI_SOURCE_INDEXING_REQUESTED' AND e.resource_version = 1
+        AND e.payload = '{"status":"INDEXING"}'::jsonb) || ':' ||
+      (SELECT count(*) FROM ai.outbox_events e WHERE e.resource_id = s.id
+        AND e.event_type = 'AI_SOURCE_INDEXED' AND e.resource_version = 2
+        AND e.payload = '{"status":"READY"}'::jsonb)
+      FROM ai.document_sources s WHERE s.id = '${createdAiSource.sourceId}'`,
+  ], { encoding: "utf8" }).trim(), { timeout: 60_000 }).toBe("READY:2:1:1:1");
+  await aiDetail.getByRole("button", { name: "Actualizar estado" }).click();
+  await expect(aiDetail.getByText("READY · versión 2")).toBeVisible();
+  await expect(aiWorkspace.getByRole("button", { name: new RegExp(aiName) })).toContainText("READY");
 
   const scopeName = `E2E authorized network ${Date.now()}`;
   const createScopeResponse = page.waitForResponse((response) => (
@@ -675,7 +746,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     const body = new FormData();
     body.append("name", "Forbidden source");
     body.append("file", new Blob(["forbidden"], { type: "text/plain" }), "forbidden.txt");
-    const [list, detail, create] = await Promise.all([
+    const [list, detail, create, index] = await Promise.all([
       fetch(`${api}/api/v1/ai/sources?page=0&size=20`, { credentials: "include" }),
       fetch(`${api}/api/v1/ai/sources/${sourceId}`, { credentials: "include" }),
       fetch(`${api}/api/v1/ai/sources`, {
@@ -684,10 +755,16 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
         headers: { "X-CSRF-Token": session.csrfToken },
         body,
       }),
+      fetch(`${api}/api/v1/ai/sources/${sourceId}/index`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
+        body: JSON.stringify({ expectedVersion: 2 }),
+      }),
     ]);
-    return { list: list.status, detail: detail.status, create: create.status };
+    return { list: list.status, detail: detail.status, create: create.status, index: index.status };
   }, { api: backendUrl!, sourceId: createdAiSource.sourceId });
-  expect(forbiddenAiOperations).toEqual({ list: 403, detail: 403, create: 403 });
+  expect(forbiddenAiOperations).toEqual({ list: 403, detail: 403, create: 403, index: 403 });
   const supportLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
   ));
