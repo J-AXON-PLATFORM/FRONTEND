@@ -458,6 +458,25 @@ h1 {
 .ai-source-indexing > button { min-height: 3.1rem; border: 0; padding: 0.75rem 1rem; color: white; background: #5d3f78; font-weight: 800; cursor: pointer; }
 .ai-source-indexing > button:hover:not(:disabled) { background: var(--dark); }
 .ai-source-indexing > button:disabled { cursor: not-allowed; opacity: 0.55; }
+.ai-retrieval-workspace { width: min(100%, 76rem); margin: 5rem auto 0; border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.ai-retrieval-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.25fr); gap: 1.25rem; align-items: start; margin-top: 2rem; border-top: 0.45rem solid #5d3f78; padding: 1.5rem; background: var(--panel); }
+.ai-retrieval-form textarea, .ai-retrieval-form select { width: 100%; min-height: 3.25rem; border: 1px solid var(--line); border-radius: 0; padding: 0.75rem 0.9rem; color: var(--ink); background: var(--panel); }
+.ai-retrieval-form textarea { resize: vertical; }
+.ai-retrieval-form .field small { color: var(--muted); line-height: 1.45; }
+.ai-retrieval-form .form-error, .ai-retrieval-form > button { grid-column: 1 / -1; }
+.ai-retrieval-form > button { min-height: 3.25rem; border: 0; padding: 0.75rem 1rem; color: white; background: #5d3f78; font-weight: 800; cursor: pointer; }
+.ai-retrieval-form > button:hover:not(:disabled) { background: var(--dark); }
+.ai-retrieval-form > button:disabled { cursor: not-allowed; opacity: 0.55; }
+.ai-retrieval-results { display: grid; gap: 1rem; margin-top: 1rem; }
+.ai-retrieval-disclaimer { border-left: 0.25rem solid #5d3f78; margin: 0; padding: 0.8rem 1rem; color: var(--muted); background: var(--panel); }
+.ai-retrieval-results ol { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
+.ai-retrieval-results article { border-left: 0.35rem solid #5d3f78; padding: 1.25rem; background: var(--panel); }
+.ai-retrieval-results article h3 { margin: 0.35rem 0 0.75rem; overflow-wrap: anywhere; }
+.ai-retrieval-results blockquote { margin: 0 0 1rem; border-left: 2px dashed var(--line); padding: 0.5rem 0.9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-retrieval-results dl { display: grid; gap: 0.4rem; margin: 0; }
+.ai-retrieval-results dl div { display: grid; grid-template-columns: 9rem 1fr; gap: 1rem; border-top: 1px solid var(--line); padding-top: 0.4rem; }
+.ai-retrieval-results dt { color: var(--muted); font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }
+.ai-retrieval-results dd { margin: 0; overflow-wrap: anywhere; font-size: 0.85rem; }
 .discovery-job-workspace { border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
 .discovery-job-grid { display: grid; grid-template-columns: minmax(17rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1rem; margin-top: 2rem; }
 .discovery-job-form, .discovery-job-result { display: grid; align-content: start; gap: 1rem; padding: 1.5rem; border: 1px solid var(--line); }
@@ -566,6 +585,8 @@ h1 {
   .ai-source-list li > button { align-items: stretch; flex-direction: column; }
   .ai-source-pagination { align-items: stretch; flex-direction: column; text-align: center; }
   .ai-source-detail dl div { grid-template-columns: 1fr; gap: 0.25rem; }
+  .ai-retrieval-form { grid-template-columns: 1fr; }
+  .ai-retrieval-results dl div { grid-template-columns: 1fr; gap: 0.25rem; }
   .discovery-job-grid { grid-template-columns: 1fr; }
   .discovered-devices > header, .discovered-device-title { display: grid; }
   .discovered-device-list dl { grid-template-columns: 1fr; }

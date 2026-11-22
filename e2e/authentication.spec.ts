@@ -41,6 +41,19 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const aiWorkspace = page.getByRole("region", { name: "Fuentes documentales" });
   await expect(aiWorkspace).toBeVisible();
   await expect(aiWorkspace.getByText("No hay fuentes registradas.")).toBeVisible();
+
+  const retrievalWorkspace = page.getByRole("region", { name: "Recuperación de evidencia" });
+  await expect(retrievalWorkspace).toBeVisible();
+  await retrievalWorkspace.getByLabel("Consulta").fill("operations handbook");
+  const emptyRetrievalResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/ai/retrieval") && response.request().method() === "POST"
+  ));
+  await retrievalWorkspace.getByRole("button", { name: "Recuperar fragmentos" }).click();
+  const emptyRetrieval = await emptyRetrievalResponse;
+  expect(emptyRetrieval.status()).toBe(200);
+  expect(await emptyRetrieval.json()).toEqual({ limit: 5, results: [] });
+  await expect(retrievalWorkspace.getByText("No se encontró evidencia en fuentes listas para esta consulta."))
+    .toBeVisible();
   const aiName = `E2E Operations Handbook ${Date.now()}`;
   const aiContent = Buffer.from("J-AXON E2E operations handbook\nStrict UTF-8: valid.\n", "utf8");
   await aiWorkspace.getByLabel("Nombre").fill(aiName);
@@ -271,6 +284,71 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await aiDetail.getByRole("button", { name: "Actualizar estado" }).click();
   await expect(aiDetail.getByText("READY · versión 2")).toBeVisible();
   await expect(aiWorkspace.getByRole("button", { name: new RegExp(aiName) })).toContainText("READY");
+
+  await retrievalWorkspace.getByLabel("Máximo de fragmentos").selectOption("3");
+  const readyRetrievalResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/ai/retrieval") && response.request().method() === "POST"
+  ));
+  await retrievalWorkspace.getByRole("button", { name: "Recuperar fragmentos" }).click();
+  const readyRetrieval = await readyRetrievalResponse;
+  expect(readyRetrieval.status()).toBe(200);
+  expect(JSON.parse(readyRetrieval.request().postData() ?? "{}")).toEqual({ query: "operations handbook", limit: 3 });
+  const retrieved = await readyRetrieval.json() as {
+    limit: number;
+    results: Array<{
+      sourceId: string; sourceName: string; sourceSha256: string; chunkId: string; ordinal: number;
+      startToken: number; endToken: number; contentSha256: string; content: string; similarity: number;
+    }>;
+  };
+  expect(retrieved.limit).toBe(3);
+  expect(retrieved.results).toHaveLength(1);
+  const [evidence] = retrieved.results;
+  expect(Object.keys(evidence).sort()).toEqual([
+    "chunkId", "content", "contentSha256", "endToken", "ordinal", "similarity", "sourceId",
+    "sourceName", "sourceSha256", "startToken",
+  ]);
+  expect(evidence).toMatchObject({
+    sourceId: createdAiSource.sourceId,
+    sourceName: aiName,
+    sourceSha256: createdAiSource.sha256,
+    ordinal: 0,
+  });
+  expect(evidence.content).toContain("operations handbook");
+  expect(Number.isFinite(evidence.similarity) && evidence.similarity > 0 && evidence.similarity <= 1).toBe(true);
+  const persistedEvidence = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT c.source_id || ':' || c.ordinal || ':' || c.content_sha256 || ':' ||
+      c.start_token || ':' || c.end_token || ':' ||
+      (SELECT count(*) FROM ai.outbox_events e WHERE e.resource_id = c.source_id)
+      FROM ai.source_chunks c WHERE c.id = '${evidence.chunkId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(persistedEvidence).toBe(
+    `${createdAiSource.sourceId}:0:${evidence.contentSha256}:${evidence.startToken}:${evidence.endToken}:3`,
+  );
+  const evidenceCard = retrievalWorkspace.getByRole("article", { name: `Fragmento 1 de ${aiName}` });
+  await expect(evidenceCard).toContainText(createdAiSource.sourceId);
+  await expect(evidenceCard).toContainText(evidence.chunkId);
+  await expect(evidenceCard).toContainText(`similitud ${evidence.similarity.toFixed(4)}`);
+  await expect(retrievalWorkspace.getByText(/sin generación ni interpretación/)).toBeVisible();
+  expect(JSON.stringify(retrieved)).not.toContain(aiStorageKey);
+
+  const rejectedRetrievals = await page.evaluate(async ({ api, unavailableApi, csrf }) => {
+    const request = async (base: string, body: string, token?: string) => (await fetch(`${base}/api/v1/ai/retrieval`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...(token ? { "X-CSRF-Token": token } : {}) },
+      body,
+    })).status;
+    return {
+      csrf: await request(api, JSON.stringify({ query: "handbook" })),
+      unknown: await request(api, JSON.stringify({ query: "handbook", extra: true }), csrf),
+      limit: await request(api, JSON.stringify({ query: "handbook", limit: 11 }), csrf),
+      duplicate: await request(api, "{\"query\":\"a\",\"query\":\"b\"}", csrf),
+      unavailable: await request(unavailableApi, JSON.stringify({ query: "handbook" }), csrf),
+    };
+  }, { api: backendUrl!, unavailableApi: unavailableBackendUrl!, csrf: adminSession.csrfToken });
+  expect(rejectedRetrievals).toEqual({ csrf: 403, unknown: 422, limit: 422, duplicate: 400, unavailable: 503 });
 
   const scopeName = `E2E authorized network ${Date.now()}`;
   const createScopeResponse = page.waitForResponse((response) => (
@@ -746,7 +824,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     const body = new FormData();
     body.append("name", "Forbidden source");
     body.append("file", new Blob(["forbidden"], { type: "text/plain" }), "forbidden.txt");
-    const [list, detail, create, index] = await Promise.all([
+    const [list, detail, create, index, retrieval] = await Promise.all([
       fetch(`${api}/api/v1/ai/sources?page=0&size=20`, { credentials: "include" }),
       fetch(`${api}/api/v1/ai/sources/${sourceId}`, { credentials: "include" }),
       fetch(`${api}/api/v1/ai/sources`, {
@@ -761,10 +839,20 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
         headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
         body: JSON.stringify({ expectedVersion: 2 }),
       }),
+      fetch(`${api}/api/v1/ai/retrieval`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
+        body: JSON.stringify({ query: "handbook" }),
+      }),
     ]);
-    return { list: list.status, detail: detail.status, create: create.status, index: index.status };
+    return {
+      list: list.status, detail: detail.status, create: create.status, index: index.status,
+      retrieval: retrieval.status,
+    };
   }, { api: backendUrl!, sourceId: createdAiSource.sourceId });
-  expect(forbiddenAiOperations).toEqual({ list: 403, detail: 403, create: 403, index: 403 });
+  expect(forbiddenAiOperations).toEqual({ list: 403, detail: 403, create: 403, index: 403, retrieval: 403 });
+  await expect(page.getByRole("heading", { name: "Recuperación de evidencia" })).not.toBeVisible();
   const supportLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"
   ));

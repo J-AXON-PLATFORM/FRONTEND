@@ -6,6 +6,8 @@ const BRACES_CVE = "CVE-2026-93687";
 const MINIMATCH_ADVISORY = "GHSA-g3hv-75wg-m249";
 const MINIMATCH_CVE = "CVE-2026-118764";
 const MINIMATCH_FIXED_VERSION = "11.0.1";
+const MINIMATCH_ADVISORY_RANGE = ">=7.0.0 <11.0.1";
+const MINIMATCH_ADVISORY_SOURCE = 1244623;
 
 const bracesVulnerabilities = new Map([
   ["braces", { direct: false, via: BRACES_ADVISORY }],
@@ -31,47 +33,19 @@ const minimatchLockEntries = new Map([
 ]);
 
 const minimatchGraph = {
-  "@eslint-community/eslint-utils": {
-    direct: false,
-    via: ["eslint"],
-    nodes: [
-      "node_modules/@eslint-community/eslint-utils",
-      "node_modules/@next/eslint-plugin-next/node_modules/@eslint-community/eslint-utils",
-    ],
-  },
-  "@eslint/config-array": {
-    direct: false,
-    via: ["minimatch"],
-    nodes: ["node_modules/@eslint/config-array"],
-  },
-  "@eslint/eslintrc": {
-    direct: false,
-    via: ["minimatch"],
-    nodes: ["node_modules/@eslint/eslintrc"],
-  },
-  "@next/eslint-plugin-next": {
-    direct: false,
-    via: ["@eslint-community/eslint-utils"],
-    nodes: ["node_modules/@next/eslint-plugin-next"],
-  },
   "@typescript-eslint/eslint-plugin": {
     direct: false,
-    via: [
-      "@typescript-eslint/parser",
-      "@typescript-eslint/type-utils",
-      "@typescript-eslint/utils",
-      "eslint",
-    ],
+    via: ["@typescript-eslint/type-utils", "@typescript-eslint/utils"],
     nodes: ["node_modules/@typescript-eslint/eslint-plugin"],
   },
   "@typescript-eslint/parser": {
     direct: false,
-    via: ["@typescript-eslint/typescript-estree", "eslint"],
+    via: ["@typescript-eslint/typescript-estree"],
     nodes: ["node_modules/@typescript-eslint/parser"],
   },
   "@typescript-eslint/type-utils": {
     direct: false,
-    via: ["@typescript-eslint/typescript-estree", "@typescript-eslint/utils", "eslint"],
+    via: ["@typescript-eslint/typescript-estree", "@typescript-eslint/utils"],
     nodes: ["node_modules/@typescript-eslint/type-utils"],
   },
   "@typescript-eslint/typescript-estree": {
@@ -81,46 +55,14 @@ const minimatchGraph = {
   },
   "@typescript-eslint/utils": {
     direct: false,
-    via: ["@eslint-community/eslint-utils", "@typescript-eslint/typescript-estree", "eslint"],
+    via: ["@typescript-eslint/typescript-estree"],
     nodes: ["node_modules/@typescript-eslint/utils"],
-  },
-  eslint: {
-    direct: true,
-    via: ["@eslint-community/eslint-utils", "@eslint/config-array", "@eslint/eslintrc", "minimatch"],
-    nodes: ["node_modules/eslint"],
-  },
-  "eslint-config-next": {
-    direct: true,
-    via: [
-      "@next/eslint-plugin-next",
-      "eslint",
-      "eslint-plugin-import",
-      "eslint-plugin-jsx-a11y",
-      "eslint-plugin-react",
-      "typescript-eslint",
-    ],
-    nodes: ["node_modules/eslint-config-next"],
-  },
-  "eslint-plugin-import": {
-    direct: false,
-    via: ["minimatch"],
-    nodes: ["node_modules/eslint-config-next/node_modules/eslint-plugin-import"],
-  },
-  "eslint-plugin-jsx-a11y": {
-    direct: false,
-    via: ["minimatch"],
-    nodes: ["node_modules/eslint-config-next/node_modules/eslint-plugin-jsx-a11y"],
-  },
-  "eslint-plugin-react": {
-    direct: false,
-    via: ["minimatch"],
-    nodes: ["node_modules/eslint-config-next/node_modules/eslint-plugin-react"],
   },
   minimatch: {
     direct: false,
     via: [MINIMATCH_ADVISORY],
-    range: "<11.0.1",
-    nodes: [...minimatchLockEntries.keys()].slice(1).concat("node_modules/minimatch"),
+    range: "7.0.0 - 11.0.0",
+    nodes: ["node_modules/minimatch"],
   },
   "typescript-eslint": {
     direct: false,
@@ -129,7 +71,6 @@ const minimatchGraph = {
       "@typescript-eslint/parser",
       "@typescript-eslint/typescript-estree",
       "@typescript-eslint/utils",
-      "eslint",
     ],
     nodes: ["node_modules/typescript-eslint"],
   },
@@ -246,7 +187,7 @@ function validateLock(packageLock, profile) {
 function validateMinimatchAdvisory(vulnerability) {
   const detail = vulnerability?.via?.[0];
   const expected = {
-    source: 1244012,
+    source: MINIMATCH_ADVISORY_SOURCE,
     name: "minimatch",
     dependency: "minimatch",
     title: "minimatch has potential denial of service via globparts amplification",
@@ -254,7 +195,7 @@ function validateMinimatchAdvisory(vulnerability) {
     severity: "moderate",
     cwe: ["CWE-405"],
     cvss: { score: 0, vectorString: null },
-    range: "<11.0.1",
+    range: MINIMATCH_ADVISORY_RANGE,
   };
   return typeof detail === "object" && sameValues(detail, expected)
     ? null
@@ -346,7 +287,10 @@ function validateAudit(audit, status) {
     return { error: `unexpected vulnerable packages: ${names.join(", ")}.` };
   }
 
-  const combined = hasBraces && hasMinimatch;
+  if (hasBraces && hasMinimatch) {
+    return { error: "the combined braces and minimatch exception graph is no longer approved." };
+  }
+  const combined = false;
   const graphError =
     (hasMinimatch && validateMinimatchGraph(audit.vulnerabilities, combined)) ||
     (hasBraces && validateBracesGraph(audit.vulnerabilities, combined));
@@ -356,7 +300,7 @@ function validateAudit(audit, status) {
   const expectedCounts = combined
     ? { info: 0, low: 0, moderate: 14, high: 5, critical: 0, total: 19 }
     : hasMinimatch
-      ? { info: 0, low: 0, moderate: 16, high: 0, critical: 0, total: 16 }
+      ? { info: 0, low: 0, moderate: 7, high: 0, critical: 0, total: 7 }
       : { info: 0, low: 0, moderate: 0, high: 5, critical: 0, total: 5 };
   if (!sameValues(counts, expectedCounts)) {
     return { error: "npm audit contains vulnerabilities outside the approved exceptions." };
@@ -414,7 +358,7 @@ function makeSelfTestFixture(profile = "minimatch") {
     }
     vulnerabilities.minimatch.via = [
       {
-        source: 1244012,
+        source: MINIMATCH_ADVISORY_SOURCE,
         name: "minimatch",
         dependency: "minimatch",
         title: "minimatch has potential denial of service via globparts amplification",
@@ -422,7 +366,7 @@ function makeSelfTestFixture(profile = "minimatch") {
         severity: "moderate",
         cwe: ["CWE-405"],
         cvss: { score: 0, vectorString: null },
-        range: "<11.0.1",
+        range: MINIMATCH_ADVISORY_RANGE,
       },
     ];
   }
@@ -462,7 +406,7 @@ function makeSelfTestFixture(profile = "minimatch") {
       ? { info: 0, low: 0, moderate: 14, high: 5, critical: 0, total: 19 }
       : profile === "braces"
         ? { info: 0, low: 0, moderate: 0, high: 5, critical: 0, total: 5 }
-        : { info: 0, low: 0, moderate: 16, high: 0, critical: 0, total: 16 };
+        : { info: 0, low: 0, moderate: 7, high: 0, critical: 0, total: 7 };
   return {
     packageJson: { dependencies: {}, devDependencies: {} },
     packageLock,
@@ -474,7 +418,7 @@ function makeSelfTestFixture(profile = "minimatch") {
 }
 
 function runSelfTest() {
-  const positiveCases = ["clean", "minimatch", "braces", "combined"];
+  const positiveCases = ["clean", "minimatch", "braces"];
   for (const profile of positiveCases) {
     const result = validateAll(makeSelfTestFixture(profile));
     if (result.error || result.profile !== profile) {
@@ -493,7 +437,16 @@ function runSelfTest() {
     fail("self-test positive case variable derived range failed.");
   }
 
+  const combinedFixture = makeSelfTestFixture("combined");
+  if (!validateAll(combinedFixture).error) fail("self-test negative case combined graph was accepted.");
+
   const negativeCases = [
+    ["former 3.x advisory range", (fixture) => {
+      fixture.audit.vulnerabilities.minimatch.via[0].range = "<11.0.1";
+    }],
+    ["additional vulnerable node", (fixture) => {
+      fixture.audit.vulnerabilities.minimatch.nodes.push("node_modules/eslint/node_modules/minimatch");
+    }],
     ["another advisory", (fixture) => {
       fixture.audit.vulnerabilities.minimatch.via[0].url = "https://github.com/advisories/GHSA-xxxx-xxxx-xxxx";
     }],
@@ -501,7 +454,7 @@ function runSelfTest() {
       fixture.audit.vulnerabilities.minimatch.severity = "high";
     }],
     ["root advisory range", (fixture) => {
-      fixture.audit.vulnerabilities.minimatch.range = "<12.0.0";
+      fixture.audit.vulnerabilities.minimatch.range = "7.0.0 - 12.0.0";
     }],
     ["lock version", (fixture) => {
       fixture.packageLock.packages["node_modules/minimatch"].version = "11.0.1";
@@ -528,7 +481,7 @@ function runSelfTest() {
     mutate(fixture);
     if (!validateAll(fixture).error) fail(`self-test negative case ${name} was accepted.`);
   }
-  console.log("Dependency audit verifier self-test passed (6 positive and 9 negative cases).");
+  console.log("Dependency audit verifier self-test passed (5 positive and 12 negative cases).");
 }
 
 if (process.argv.slice(2).includes("--self-test")) {
@@ -557,7 +510,7 @@ if (result.profile === "clean") {
 } else {
   if (result.profile === "minimatch" || result.profile === "combined") {
     console.warn(
-      `Temporary development-only exception accepted: ${MINIMATCH_ADVISORY} / ${MINIMATCH_CVE} in minimatch (<11.0.1; official fixed version ${MINIMATCH_FIXED_VERSION}).`,
+      `Temporary development-only exception accepted: ${MINIMATCH_ADVISORY} / ${MINIMATCH_CVE} in minimatch (${MINIMATCH_ADVISORY_RANGE}; official fixed version ${MINIMATCH_FIXED_VERSION}).`,
     );
   }
   if (result.profile === "braces" || result.profile === "combined") {

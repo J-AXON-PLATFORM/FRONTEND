@@ -23,7 +23,7 @@ LABEL org.opencontainers.image.title="J-AXON Frontend" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.source="https://github.com/J-AXON-PLATFORM/FRONTEND"
 
-RUN apk add --no-cache libstdc++ && \
+RUN apk add --no-cache libstdc++ musl=1.2.6-r3 musl-utils=1.2.6-r3 zlib=1.4-r0 && \
     addgroup --system --gid 10001 jaxon && \
     adduser --system --uid 10001 --ingroup jaxon --home /app --shell /sbin/nologin jaxon
 

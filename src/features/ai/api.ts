@@ -13,6 +13,28 @@ export type AiSource = {
   updatedAt: string;
 };
 
+export type AiRetrievalResult = {
+  sourceId: string;
+  sourceName: string;
+  sourceSha256: string;
+  chunkId: string;
+  ordinal: number;
+  startToken: number;
+  endToken: number;
+  contentSha256: string;
+  content: string;
+  similarity: number;
+};
+
+export type AiRetrievalResponse = {
+  limit: number;
+  results: AiRetrievalResult[];
+};
+
+export const AI_RETRIEVAL_MAX_QUERY = 2000;
+export const AI_RETRIEVAL_DEFAULT_LIMIT = 5;
+export const AI_RETRIEVAL_MAX_LIMIT = 10;
+
 export type AiSourcePage = {
   items: AiSource[];
   page: number;
@@ -89,6 +111,85 @@ export async function indexAiSource(
     throw new AiSourceContractError();
   }
   return accepted;
+}
+
+export async function retrieveAiChunks(
+  query: string,
+  limit: number,
+  csrfToken: string,
+): Promise<AiRetrievalResponse> {
+  const response = await fetch(`${apiUrl}/ai/retrieval`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ query, limit }),
+  });
+  if (response.status !== 200) {
+    if (!response.ok) await read(response);
+    throw new AiSourceContractError();
+  }
+  return parseAiRetrievalResponse(await read(response), limit);
+}
+
+export function trimAiRetrievalQuery(value: string): string {
+  return value.replace(/^[\s\p{Z}\p{Cc}\p{Cf}]+|[\s\p{Z}\p{Cc}\p{Cf}]+$/gu, "");
+}
+
+export function parseAiRetrievalResponse(value: unknown, expectedLimit: number): AiRetrievalResponse {
+  if (!isRecord(value)) throw new AiSourceContractError();
+  if (Object.keys(value).length !== 2
+      || !("limit" in value) || !("results" in value)
+      || value.limit !== expectedLimit
+      || !Number.isSafeInteger(value.limit)
+      || (value.limit as number) < 1 || (value.limit as number) > AI_RETRIEVAL_MAX_LIMIT
+      || !Array.isArray(value.results)
+      || value.results.length > (value.limit as number)) {
+    throw new AiSourceContractError();
+  }
+  const results = value.results.map(parseAiRetrievalResult);
+  const chunkIds = new Set(results.map((result) => result.chunkId));
+  if (chunkIds.size !== results.length) throw new AiSourceContractError();
+  for (let index = 1; index < results.length; index += 1) {
+    if (compareRanking(results[index - 1], results[index]) >= 0) throw new AiSourceContractError();
+  }
+  return { limit: value.limit as number, results };
+}
+
+function parseAiRetrievalResult(value: unknown): AiRetrievalResult {
+  if (!isRecord(value)) throw new AiSourceContractError();
+  const keys = new Set([
+    "sourceId", "sourceName", "sourceSha256", "chunkId", "ordinal", "startToken", "endToken",
+    "contentSha256", "content", "similarity",
+  ]);
+  if (Object.keys(value).length !== keys.size
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.sourceId !== "string" || !UUID_V4.test(value.sourceId)
+      || typeof value.sourceName !== "string" || normalizeAiSourceName(value.sourceName) !== value.sourceName
+      || [...value.sourceName].length < 1 || [...value.sourceName].length > 256
+      || typeof value.sourceSha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.sourceSha256)
+      || typeof value.chunkId !== "string" || !UUID_V4.test(value.chunkId)
+      || !isNonNegativeInteger(value.ordinal)
+      || !isNonNegativeInteger(value.startToken)
+      || !isNonNegativeInteger(value.endToken)
+      || (value.endToken as number) <= (value.startToken as number)
+      || typeof value.contentSha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.contentSha256)
+      || typeof value.content !== "string" || value.content.length === 0
+      || typeof value.similarity !== "number" || !Number.isFinite(value.similarity)
+      || value.similarity < -1 || value.similarity > 1) {
+    throw new AiSourceContractError();
+  }
+  return value as AiRetrievalResult;
+}
+
+function compareRanking(left: AiRetrievalResult, right: AiRetrievalResult): number {
+  if (left.similarity !== right.similarity) return right.similarity - left.similarity;
+  const leftSource = left.sourceId.toLowerCase();
+  const rightSource = right.sourceId.toLowerCase();
+  if (leftSource !== rightSource) return leftSource < rightSource ? -1 : 1;
+  return left.ordinal - right.ordinal;
 }
 
 export function parseAiSource(value: unknown): AiSource {
