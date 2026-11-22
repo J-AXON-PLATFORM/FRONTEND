@@ -5,8 +5,11 @@ import {
   getAiSource,
   indexAiSource,
   listAiSources,
+  parseAiRetrievalResponse,
   parseAiSource,
   parseAiSourcePage,
+  retrieveAiChunks,
+  trimAiRetrievalQuery,
 } from "./api";
 
 const source = {
@@ -121,6 +124,68 @@ describe("AI source API", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body, 202)));
 
     await expect(indexAiSource(source.sourceId, 0, "csrf-token")).rejects.toBeInstanceOf(AiSourceContractError);
+  });
+});
+
+const retrieved = {
+  sourceId: "34844482-1d29-4d30-87fd-1bb67a22e050",
+  sourceName: "Operations handbook",
+  sourceSha256: "b".repeat(64),
+  chunkId: "54844482-1d29-4d30-87fd-1bb67a22e050",
+  ordinal: 0,
+  startToken: 0,
+  endToken: 12,
+  contentSha256: "c".repeat(64),
+  content: "Reinicia el servicio con el procedimiento aprobado.",
+  similarity: 0.91,
+};
+
+describe("AI retrieval API", () => {
+  it("posts a closed body with CSRF and accepts only an exact 200 response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ limit: 3, results: [retrieved] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(retrieveAiChunks("reinicio", 3, "csrf-token")).resolves.toEqual({ limit: 3, results: [retrieved] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/ai/retrieval", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": "csrf-token" },
+      body: JSON.stringify({ query: "reinicio", limit: 3 }),
+    });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ limit: 3, results: [] }, 202)));
+    await expect(retrieveAiChunks("reinicio", 3, "csrf-token")).rejects.toBeInstanceOf(AiSourceContractError);
+  });
+
+  it("rejects open, inconsistent, or unordered retrieval responses", () => {
+    expect(parseAiRetrievalResponse({ limit: 5, results: [] }, 5)).toEqual({ limit: 5, results: [] });
+    const second = { ...retrieved, chunkId: "64844482-1d29-4d30-87fd-1bb67a22e050", ordinal: 1, similarity: 0.91 };
+    expect(parseAiRetrievalResponse({ limit: 5, results: [retrieved, second] }, 5).results).toHaveLength(2);
+
+    const invalid: unknown[] = [
+      { limit: 4, results: [] },
+      { limit: 5, results: [], extra: true },
+      { limit: 1, results: [retrieved, second] },
+      { limit: 5, results: [{ ...retrieved, storageKey: "key.txt" }] },
+      { limit: 5, results: [{ ...retrieved, similarity: 1.01 }] },
+      { limit: 5, results: [{ ...retrieved, similarity: Number.NaN }] },
+      { limit: 5, results: [{ ...retrieved, endToken: 0 }] },
+      { limit: 5, results: [{ ...retrieved, content: "" }] },
+      { limit: 5, results: [{ ...retrieved, sourceSha256: "B".repeat(64) }] },
+      { limit: 5, results: [{ ...retrieved, chunkId: "not-a-uuid" }] },
+      { limit: 5, results: [second, retrieved] },
+      { limit: 5, results: [{ ...retrieved, similarity: 0.2 }, retrieved] },
+      { limit: 5, results: [retrieved, retrieved] },
+    ];
+    for (const value of invalid) {
+      expect(() => parseAiRetrievalResponse(value, 5)).toThrow(AiSourceContractError);
+    }
+  });
+
+  it("trims Unicode blank, control, and format characters", () => {
+    expect(trimAiRetrievalQuery("  red\n")).toBe("red");
+    expect(trimAiRetrievalQuery("\u00A0\uFEFF\u200Bred\u001F")).toBe("red");
+    expect(trimAiRetrievalQuery("\u00A0\u200B \t")).toBe("");
   });
 });
 

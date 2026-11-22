@@ -2,6 +2,7 @@
 
 import { ApiError, getCurrentSession } from "@/features/auth/api";
 import { LogoutButton } from "@/features/auth/logout-button";
+import { AiRetrievalWorkspace } from "@/features/ai/ai-retrieval-workspace";
 import { AiSourceWorkspace } from "@/features/ai/ai-source-workspace";
 import { UserAdministration } from "@/features/administration/user-administration";
 import { AuthorizedScopeWorkspace } from "@/features/discovery/authorized-scope-workspace";
@@ -56,6 +57,7 @@ export default function HomePage() {
       </section>
       {session.data.roles.includes("SYSTEM_ADMIN") && <UserAdministration session={session.data} />}
       {session.data.roles.includes("SYSTEM_ADMIN") && <AiSourceWorkspace session={session.data} />}
+      {session.data.roles.includes("SYSTEM_ADMIN") && <AiRetrievalWorkspace session={session.data} />}
       {(session.data.roles.includes("SYSTEM_ADMIN") || session.data.roles.includes("IT_OPERATOR"))
         && <AuthorizedScopeWorkspace session={session.data} />}
       {session.data.roles.includes("SYSTEM_ADMIN")
