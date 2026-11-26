@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AiSourceContractError,
   createAiSource,
+  disableAiSource,
   getAiSource,
   indexAiSource,
   listAiSources,
@@ -124,6 +125,57 @@ describe("AI source API", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body, 202)));
 
     await expect(indexAiSource(source.sourceId, 0, "csrf-token")).rejects.toBeInstanceOf(AiSourceContractError);
+  });
+});
+
+describe("AI source disable API", () => {
+  it("posts a closed version body with CSRF and accepts the disabled source", async () => {
+    const disabled = { ...source, status: "DISABLED", version: 3 } as const;
+    const fetchMock = vi.fn().mockResolvedValue(json(disabled));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(disableAiSource(source.sourceId, 2, "csrf-token")).resolves.toEqual(disabled);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/ai/sources/${source.sourceId}/disable`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": "csrf-token",
+        },
+        body: JSON.stringify({ expectedVersion: 2 }),
+      },
+    );
+  });
+
+  it("accepts the current-version no-op response", async () => {
+    const disabled = { ...source, status: "DISABLED", version: 3 } as const;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(disabled)));
+
+    await expect(disableAiSource(source.sourceId, 3, "csrf-token")).resolves.toEqual(disabled);
+  });
+
+  it.each([
+    [{ ...source, status: "DISABLED", version: 3 }, 201],
+    [{ ...source, status: "READY", version: 3 }, 200],
+    [{ ...source, sourceId: "59844482-1d29-4d30-87fd-1bb67a22e050", status: "DISABLED", version: 3 }, 200],
+    [{ ...source, status: "DISABLED", version: 4 }, 200],
+    [{ ...source, status: "DISABLED", version: 1 }, 200],
+    [{ ...source, status: "DISABLED", version: 3, storageKey: "x" }, 200],
+  ])("rejects an incongruent disable response", async (body, status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body, status)));
+
+    await expect(disableAiSource(source.sourceId, 2, "csrf-token")).rejects.toBeInstanceOf(AiSourceContractError);
+  });
+
+  it("propagates problem responses as API errors", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "AI_SOURCE_DISABLE_CONFLICT",
+      correlationId: "14fb9d5d-b66a-454c-9fea-8dbdcc1c6ac7",
+    }), { status: 409, headers: { "Content-Type": "application/problem+json" } })));
+
+    await expect(disableAiSource(source.sourceId, 2, "csrf-token")).rejects.toMatchObject({ status: 409 });
   });
 });
 

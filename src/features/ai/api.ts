@@ -113,6 +113,36 @@ export async function indexAiSource(
   return accepted;
 }
 
+export async function disableAiSource(
+  sourceId: string,
+  expectedVersion: number,
+  csrfToken: string,
+): Promise<AiSource> {
+  const response = await fetch(
+    `${apiUrl}/ai/sources/${encodeURIComponent(sourceId)}/disable`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ expectedVersion }),
+    },
+  );
+  if (response.status !== 200) {
+    if (!response.ok) await read(response);
+    throw new AiSourceContractError();
+  }
+  const disabled = parseAiSource(await read(response));
+  if (disabled.sourceId.toLowerCase() !== sourceId.toLowerCase()
+      || disabled.status !== "DISABLED"
+      || (disabled.version !== expectedVersion && disabled.version !== expectedVersion + 1)) {
+    throw new AiSourceContractError();
+  }
+  return disabled;
+}
+
 export async function retrieveAiChunks(
   query: string,
   limit: number,
