@@ -350,6 +350,102 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   }, { api: backendUrl!, unavailableApi: unavailableBackendUrl!, csrf: adminSession.csrfToken });
   expect(rejectedRetrievals).toEqual({ csrf: 403, unknown: 422, limit: 422, duplicate: 400, unavailable: 503 });
 
+  const chunksBeforeDisable = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT string_agg(id || ':' || content_sha256 || ':' || md5(embedding::text), ',' ORDER BY ordinal)
+      FROM ai.source_chunks WHERE source_id = '${createdAiSource.sourceId}'`,
+  ], { encoding: "utf8" }).trim();
+  expect(chunksBeforeDisable).not.toBe("");
+  const rejectedDisableRequests = await page.evaluate(async ({ api, sourceId, csrf }) => {
+    const request = async (body: string, token?: string) => (await fetch(`${api}/api/v1/ai/sources/${sourceId}/disable`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...(token ? { "X-CSRF-Token": token } : {}) },
+      body,
+    })).status;
+    return {
+      csrf: await request(JSON.stringify({ expectedVersion: 2 })),
+      stale: await request(JSON.stringify({ expectedVersion: 1 }), csrf),
+      unknown: await request(JSON.stringify({ expectedVersion: 2, reason: "x" }), csrf),
+    };
+  }, { api: backendUrl!, sourceId: createdAiSource.sourceId, csrf: adminSession.csrfToken });
+  expect(rejectedDisableRequests).toEqual({ csrf: 403, stale: 409, unknown: 422 });
+
+  page.once("dialog", (dialog) => dialog.accept());
+  const disableAiSourceResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/ai/sources/${createdAiSource.sourceId}/disable`)
+      && response.request().method() === "POST"
+  ));
+  const retrievalAfterDisableResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/ai/retrieval") && response.request().method() === "POST"
+  ));
+  await aiDetail.getByRole("button", { name: "Deshabilitar" }).click();
+  const disabledAiSourceResponse = await disableAiSourceResponse;
+  expect(disabledAiSourceResponse.status()).toBe(200);
+  expect(JSON.parse(disabledAiSourceResponse.request().postData() ?? "{}")).toEqual({ expectedVersion: 2 });
+  expect(await disabledAiSourceResponse.json()).toMatchObject({
+    sourceId: createdAiSource.sourceId,
+    status: "DISABLED",
+    version: 3,
+  });
+  await expect(aiDetail.getByText("DISABLED · versión 3")).toBeVisible();
+  await expect(aiWorkspace.getByRole("button", { name: new RegExp(aiName) })).toContainText("DISABLED");
+  await expect(aiDetail.getByRole("button", { name: "Deshabilitar" })).toHaveCount(0);
+  await expect(aiDetail.getByRole("button", { name: "Solicitar indexación" })).toHaveCount(0);
+  const retrievalAfterDisable = await retrievalAfterDisableResponse;
+  expect(retrievalAfterDisable.status()).toBe(200);
+  expect((await retrievalAfterDisable.json() as { results: unknown[] }).results).toEqual([]);
+  await expect(retrievalWorkspace.getByText("No se encontró evidencia en fuentes listas para esta consulta."))
+    .toBeVisible();
+
+  const explicitRetrievalResponse = page.waitForResponse((response) => (
+    response.url().endsWith("/api/v1/ai/retrieval") && response.request().method() === "POST"
+  ));
+  await retrievalWorkspace.getByRole("button", { name: "Recuperar fragmentos" }).click();
+  const explicitRetrieval = await explicitRetrievalResponse;
+  expect(explicitRetrieval.status()).toBe(200);
+  expect(JSON.stringify(await explicitRetrieval.json())).not.toContain(createdAiSource.sourceId);
+
+  const noOpDisable = await page.evaluate(async ({ api, sourceId, csrf }) => {
+    const request = async (expectedVersion: number) => {
+      const response = await fetch(`${api}/api/v1/ai/sources/${sourceId}/disable`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        body: JSON.stringify({ expectedVersion }),
+      });
+      return { status: response.status, body: await response.json() as { status?: string; version?: number } };
+    };
+    return { current: await request(3), stale: (await request(2)).status };
+  }, { api: backendUrl!, sourceId: createdAiSource.sourceId, csrf: adminSession.csrfToken });
+  expect(noOpDisable).toEqual({
+    current: { status: 200, body: expect.objectContaining({ status: "DISABLED", version: 3 }) },
+    stale: 409,
+  });
+  expect(execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT s.status || ':' || s.version || ':' ||
+      (SELECT count(*) FROM ai.outbox_events e WHERE e.resource_id = s.id
+        AND e.event_type = 'AI_SOURCE_DISABLED' AND e.resource_version = 3
+        AND e.payload = '{"previousStatus":"READY","newStatus":"DISABLED"}'::jsonb) || ':' ||
+      (SELECT count(*) FROM ai.outbox_events e WHERE e.resource_id = s.id) || '|' ||
+      (SELECT string_agg(c.id || ':' || c.content_sha256 || ':' || md5(c.embedding::text), ',' ORDER BY c.ordinal)
+        FROM ai.source_chunks c WHERE c.source_id = s.id)
+      FROM ai.document_sources s WHERE s.id = '${createdAiSource.sourceId}'`,
+  ], { encoding: "utf8" }).trim()).toBe(`DISABLED:3:1:4|${chunksBeforeDisable}`);
+  const disabledAiTempDir = mkdtempSync(join(tmpdir(), "jaxon-ai-disabled-source-"));
+  try {
+    const copiedDisabledSource = join(disabledAiTempDir, "stored.txt");
+    execFileSync("docker", [
+      "cp", `${databaseContainer}:${aiStorageRoot}/${aiStorageKey}`, copiedDisabledSource,
+    ]);
+    expect(readFileSync(copiedDisabledSource)).toEqual(aiContent);
+  } finally {
+    rmSync(disabledAiTempDir, { recursive: true, force: true });
+  }
+
   const scopeName = `E2E authorized network ${Date.now()}`;
   const createScopeResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/discovery/scopes") && response.request().method() === "POST"
@@ -824,7 +920,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     const body = new FormData();
     body.append("name", "Forbidden source");
     body.append("file", new Blob(["forbidden"], { type: "text/plain" }), "forbidden.txt");
-    const [list, detail, create, index, retrieval] = await Promise.all([
+    const [list, detail, create, index, retrieval, disable] = await Promise.all([
       fetch(`${api}/api/v1/ai/sources?page=0&size=20`, { credentials: "include" }),
       fetch(`${api}/api/v1/ai/sources/${sourceId}`, { credentials: "include" }),
       fetch(`${api}/api/v1/ai/sources`, {
@@ -845,13 +941,21 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
         headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
         body: JSON.stringify({ query: "handbook" }),
       }),
+      fetch(`${api}/api/v1/ai/sources/${sourceId}/disable`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
+        body: JSON.stringify({ expectedVersion: 3 }),
+      }),
     ]);
     return {
       list: list.status, detail: detail.status, create: create.status, index: index.status,
-      retrieval: retrieval.status,
+      retrieval: retrieval.status, disable: disable.status,
     };
   }, { api: backendUrl!, sourceId: createdAiSource.sourceId });
-  expect(forbiddenAiOperations).toEqual({ list: 403, detail: 403, create: 403, index: 403, retrieval: 403 });
+  expect(forbiddenAiOperations).toEqual({
+    list: 403, detail: 403, create: 403, index: 403, retrieval: 403, disable: 403,
+  });
   await expect(page.getByRole("heading", { name: "Recuperación de evidencia" })).not.toBeVisible();
   const supportLogoutResponse = page.waitForResponse((response) => (
     response.url().endsWith("/api/v1/auth/logout") && response.request().method() === "POST"

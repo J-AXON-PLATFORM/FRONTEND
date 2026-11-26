@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   AiSourceContractError,
   createAiSource,
+  disableAiSource,
   getAiSource,
   indexAiSource,
   listAiSources,
@@ -31,6 +32,7 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
   const fileInput = useRef<HTMLInputElement>(null);
   const submitLock = useRef(false);
   const indexLock = useRef(false);
+  const disableLock = useRef(false);
   const [page, setPage] = useState(0);
   const [name, setName] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -108,7 +110,46 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
     },
   });
 
-  const authenticationError = [sources.error, detail.error, creation.error, indexing.error]
+  const disabling = useMutation({
+    mutationFn: (source: AiSource) => disableAiSource(
+      source.sourceId,
+      source.version,
+      session.csrfToken,
+    ),
+    retry: false,
+    onSuccess: async (disabled) => {
+      await Promise.all([
+        refreshSource(disabled.sourceId),
+        queryClient.invalidateQueries({
+          queryKey: ["users", session.userId, "ai", "retrieval"],
+        }),
+      ]);
+    },
+    onError: async (error, source) => {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 409)) {
+        await refreshSource(source.sourceId);
+      }
+    },
+    onSettled: () => {
+      disableLock.current = false;
+    },
+  });
+
+  async function refreshSource(sourceId: string) {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["users", session.userId, "ai", "sources"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: detailKey(session.userId, sourceId),
+        exact: true,
+      }),
+    ]);
+  }
+
+  const authenticationError = [
+    sources.error, detail.error, creation.error, indexing.error, disabling.error,
+  ]
     .some((error) => error instanceof ApiError && error.status === 401);
   useEffect(() => {
     if (authenticationError) {
@@ -178,6 +219,20 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
     indexing.mutate(source);
   }
 
+  function requestDisable(source: AiSource) {
+    if ((source.status !== "READY" && source.status !== "FAILED") || disableLock.current) return;
+    disableLock.current = true;
+    disabling.reset();
+    if (!window.confirm(
+      `Deshabilitar la fuente documental “${source.name}” en versión ${source.version}? `
+        + "Dejará de usarse en la recuperación y no puede reactivarse desde J-AXON.",
+    )) {
+      disableLock.current = false;
+      return;
+    }
+    disabling.mutate(source);
+  }
+
   return (
     <section className="ai-source-workspace" aria-labelledby="ai-source-title">
       <header className="workspace-heading ai-heading">
@@ -236,7 +291,7 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
                 <li key={source.sourceId}>
                   <button
                     type="button"
-                    disabled={indexing.isPending}
+                    disabled={indexing.isPending || disabling.isPending}
                     aria-pressed={selectedSourceId === source.sourceId}
                     onClick={() => setSelectedSourceId(source.sourceId)}
                   >
@@ -268,8 +323,13 @@ export function AiSourceWorkspace({ session }: Readonly<{ session: Session }>) {
               indexingError={indexing.isError && indexing.variables?.sourceId === detail.data.sourceId
                 ? indexing.error
                 : null}
+              disabling={disabling.isPending && disabling.variables?.sourceId === detail.data.sourceId}
+              disableError={disabling.isError && disabling.variables?.sourceId === detail.data.sourceId
+                ? disabling.error
+                : null}
               refreshing={detail.isFetching}
               onIndex={requestIndexing}
+              onDisable={requestDisable}
               onRefresh={() => {
                 void Promise.all([
                   detail.refetch(),
@@ -290,15 +350,21 @@ function AiSourceDetail({
   source,
   indexing,
   indexingError,
+  disabling,
+  disableError,
   refreshing,
   onIndex,
+  onDisable,
   onRefresh,
 }: Readonly<{
   source: AiSource;
   indexing: boolean;
   indexingError: Error | null;
+  disabling: boolean;
+  disableError: Error | null;
   refreshing: boolean;
   onIndex: (source: AiSource) => void;
+  onDisable: (source: AiSource) => void;
   onRefresh: () => void;
 }>) {
   return (
@@ -326,16 +392,29 @@ function AiSourceDetail({
       {source.status !== "PENDING" && (
         <div className="ai-source-indexing">
           <p>REST conserva el estado oficial de la indexación.</p>
-          <button type="button" disabled={refreshing} onClick={onRefresh}>
+          <button type="button" disabled={refreshing || disabling} onClick={onRefresh}>
             {refreshing ? "Actualizando estado..." : "Actualizar estado"}
           </button>
         </div>
+      )}
+      {(source.status === "READY" || source.status === "FAILED") && (
+        <div className="ai-source-indexing">
+          <p>Deshabilitar excluye la fuente de toda recuperación de inmediato y conserva su original, fragmentos y vectores. No existe reactivación.</p>
+          {disableError && <p className="form-error" role="alert">{sourceError(disableError, "deshabilitar")}</p>}
+          <button type="button" disabled={disabling || refreshing} onClick={() => onDisable(source)}>
+            {disabling ? "Deshabilitando fuente..." : "Deshabilitar"}
+          </button>
+        </div>
+      )}
+      {source.status === "DISABLED" && (
+        <p className="administration-empty">Fuente deshabilitada: no participa en la recuperación y no admite indexación ni reactivación.</p>
       )}
     </article>
   );
 }
 
-function sourceError(error: Error | null, action: "registrar" | "listar" | "consultar" | "indexar") {
+function sourceError(error: Error | null, action: "registrar" | "listar" | "consultar" | "indexar" | "deshabilitar",
+) {
   if (error instanceof AiSourceContractError) {
     return "El servicio devolvió metadata de AI con un formato no válido.";
   }
@@ -345,6 +424,12 @@ function sourceError(error: Error | null, action: "registrar" | "listar" | "cons
   if (error.status === 404) return "La fuente documental ya no existe.";
   if (action === "indexar" && error.status === 409) {
     return "La versión o el estado actual ya no permite iniciar la indexación.";
+  }
+  if (action === "deshabilitar" && error.status === 409) {
+    return "La versión o el estado actual ya no permite deshabilitar la fuente. Se reconsultó su estado.";
+  }
+  if (action === "deshabilitar" && (error.status === 400 || error.status === 422)) {
+    return "La solicitud de deshabilitación no es válida.";
   }
   if (error.status === 413) return "El archivo supera el máximo de 1 MiB.";
   if (error.status === 400 || error.status === 422) return "Revisa el nombre, tipo, tamaño y codificación del archivo.";

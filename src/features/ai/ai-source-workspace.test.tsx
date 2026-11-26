@@ -239,6 +239,147 @@ describe("AiSourceWorkspace", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: "Solicitar indexación" })).toBeTruthy();
   });
+
+  it.each(["PENDING", "INDEXING", "DISABLED"] as const)("does not offer disabling for %s sources", async (status) => {
+    const current = { ...source, status, version: 2 };
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) return Promise.resolve(json(current));
+      return Promise.resolve(json({ ...emptyPageBody(), items: [current], totalElements: 1, totalPages: 1 }));
+    }));
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    await screen.findByText(`${status} · versión 2`);
+
+    expect(screen.queryByRole("button", { name: "Deshabilitar" })).toBeNull();
+    if (status === "DISABLED") {
+      expect(screen.queryByRole("button", { name: "Solicitar indexación" })).toBeNull();
+      expect(screen.getByText(/no admite indexación ni reactivación/)).toBeTruthy();
+    }
+  });
+
+  it.each(["READY", "FAILED"] as const)(
+    "confirms disabling a %s source once with the observed version and refetches list and detail",
+    async (status) => {
+      let resolveDisable!: (response: Response) => void;
+      let disabledState = false;
+      const pendingDisable = new Promise<Response>((resolve) => { resolveDisable = resolve; });
+      const current = { ...source, status, version: 2 } as const;
+      const disabled = { ...source, status: "DISABLED", version: 3 } as const;
+      const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/disable") && init?.method === "POST") return pendingDisable;
+        if (url.endsWith(`/ai/sources/${source.sourceId}`)) {
+          return Promise.resolve(json(disabledState ? disabled : current));
+        }
+        if (url.includes("/ai/sources?page=0")) {
+          return Promise.resolve(json({
+            ...emptyPageBody(), items: [disabledState ? disabled : current], totalElements: 1, totalPages: 1,
+          }));
+        }
+        return Promise.reject(new Error(`Unexpected request: ${url}`));
+      });
+      const confirm = vi.fn(() => true);
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("confirm", confirm);
+      renderWorkspace();
+
+      await screen.findByText("Operations handbook");
+      fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+      const disableButton = await screen.findByRole("button", { name: "Deshabilitar" });
+      fireEvent.click(disableButton);
+      fireEvent.click(disableButton);
+      await screen.findByRole("button", { name: "Deshabilitando fuente..." });
+      const posts = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/disable"));
+      expect(posts).toHaveLength(1);
+      expect(posts[0][1]?.body).toBe(JSON.stringify({ expectedVersion: 2 }));
+      expect((posts[0][1]?.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(screen.getByText(`${status} · versión 2`)).toBeTruthy();
+
+      disabledState = true;
+      resolveDisable(json(disabled));
+      await screen.findByText("DISABLED · versión 3");
+      expect(screen.queryByRole("button", { name: "Deshabilitar" })).toBeNull();
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith(`/ai/sources/${source.sourceId}`)).length)
+        .toBeGreaterThanOrEqual(2);
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/ai/sources?page=0")).length)
+        .toBeGreaterThanOrEqual(2);
+    },
+  );
+
+  it("does not send the request when the confirmation is cancelled", async () => {
+    const current = { ...source, status: "READY", version: 2 } as const;
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) return Promise.resolve(json(current));
+      return Promise.resolve(json({ ...emptyPageBody(), items: [current], totalElements: 1, totalPages: 1 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => false));
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Deshabilitar" }));
+
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/disable"))).toBe(false);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Deshabilitar" }).disabled).toBe(false);
+  });
+
+  it("shows an accessible conflict and refetches the official state without retrying", async () => {
+    let conflicted = false;
+    const current = { ...source, status: "READY", version: 2 } as const;
+    const changed = { ...source, status: "READY", version: 4 } as const;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/disable") && init?.method === "POST") {
+        conflicted = true;
+        return Promise.resolve(problem(409));
+      }
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) return Promise.resolve(json(conflicted ? changed : current));
+      return Promise.resolve(json({
+        ...emptyPageBody(), items: [conflicted ? changed : current], totalElements: 1, totalPages: 1,
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Deshabilitar" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("ya no permite deshabilitar");
+    await screen.findByText("READY · versión 4");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/disable"))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/ai/sources?page=0")).length)
+      .toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps the source actionable after a 503 without refetching or retrying", async () => {
+    const current = { ...source, status: "FAILED", version: 2 } as const;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/disable") && init?.method === "POST") return Promise.resolve(problem(503));
+      if (url.endsWith(`/ai/sources/${source.sourceId}`)) return Promise.resolve(json(current));
+      return Promise.resolve(json({ ...emptyPageBody(), items: [current], totalElements: 1, totalPages: 1 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderWorkspace();
+
+    await screen.findByText("Operations handbook");
+    fireEvent.click(screen.getByRole("button", { name: /Operations handbook/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Deshabilitar" }));
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Deshabilitar" }).disabled).toBe(false);
+    expect(screen.getByText("FAILED · versión 2")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/disable"))).toHaveLength(1);
+  });
 });
 
 function renderWorkspace() {
