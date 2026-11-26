@@ -5,6 +5,7 @@ import { LogoutButton } from "@/features/auth/logout-button";
 import { AiRetrievalWorkspace } from "@/features/ai/ai-retrieval-workspace";
 import { AiSourceWorkspace } from "@/features/ai/ai-source-workspace";
 import { UserAdministration } from "@/features/administration/user-administration";
+import { AuditWorkspace } from "@/features/audit/audit-workspace";
 import { AuthorizedScopeWorkspace } from "@/features/discovery/authorized-scope-workspace";
 import { DiscoveryExecutorWorkspace } from "@/features/discovery/discovery-executor-workspace";
 import { DiscoveryJobWorkspace } from "@/features/discovery/discovery-job-workspace";
@@ -67,6 +68,7 @@ export default function HomePage() {
       {session.data.roles.includes("IT_OPERATOR") && <AssetWorkspace session={session.data} />}
       {session.data.roles.includes("IT_OPERATOR") && <TicketWorkspace session={session.data} />}
       {session.data.roles.includes("SUPPORT_TECHNICIAN") && <TechnicianTicketWorkspace session={session.data} />}
+      {session.data.roles.includes("AUDITOR") && <AuditWorkspace session={session.data} />}
     </main>
   );
 }

@@ -606,3 +606,22 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+.audit-workspace { width: min(100%, 76rem); margin: 5rem auto 0; border-top: 1px solid var(--line); padding: 4rem 0 5rem; }
+.audit-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1.25rem; align-items: start; margin-top: 2rem; border-top: 0.45rem solid #24566b; padding: 1.5rem; background: var(--panel); }
+.audit-filters input, .audit-filters select { width: 100%; min-height: 3.25rem; border: 1px solid var(--line); border-radius: 0; padding: 0.75rem 0.9rem; color: var(--ink); background: var(--panel); }
+.audit-filters .form-error, .audit-filters > button { grid-column: 1 / -1; }
+.audit-results { display: grid; gap: 1rem; margin-top: 2rem; }
+.audit-results ol { display: grid; gap: 1rem; margin: 0; padding: 0; list-style: none; }
+.audit-results article { border-left: 0.35rem solid #24566b; padding: 1.25rem 1.5rem; background: var(--panel); overflow-wrap: anywhere; }
+.audit-results article h3 { margin: 0.35rem 0 1rem; }
+.audit-results dl { display: grid; gap: 0.6rem; margin: 0; }
+.audit-results dl div { display: grid; grid-template-columns: minmax(9rem, 0.3fr) 1fr; gap: 1rem; }
+.audit-results dt { color: var(--muted); font-size: 0.78rem; font-weight: 800; text-transform: uppercase; }
+.audit-results dd { margin: 0; }
+.audit-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.audit-pagination button { min-height: 2.7rem; border: 1px solid #24566b; padding: 0.65rem 1rem; color: #24566b; background: transparent; font-weight: 800; cursor: pointer; }
+.audit-pagination button:disabled { cursor: not-allowed; opacity: 0.45; }
+.audit-pagination span { color: var(--muted); font-size: 0.78rem; }
+@media (max-width: 40rem) { .audit-results dl div { grid-template-columns: 1fr; gap: 0.2rem; } }
+

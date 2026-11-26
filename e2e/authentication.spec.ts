@@ -435,6 +435,42 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
         FROM ai.source_chunks c WHERE c.source_id = s.id)
       FROM ai.document_sources s WHERE s.id = '${createdAiSource.sourceId}'`,
   ], { encoding: "utf8" }).trim()).toBe(`DISABLED:3:1:4|${chunksBeforeDisable}`);
+  const disabledAuditSource = execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT event_id || ':' || correlation_id || ':' || actor_id FROM ai.outbox_events
+      WHERE resource_id = '${createdAiSource.sourceId}' AND event_type = 'AI_SOURCE_DISABLED'`,
+  ], { encoding: "utf8" }).trim().split(":");
+  const [disabledEventId, disabledCorrelationId, disabledActorId] = disabledAuditSource;
+  await expect.poll(() => execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT
+      (SELECT d.status || ':' || d.attempts FROM ai.outbox_deliveries d
+        WHERE d.event_id = '${disabledEventId}' AND d.consumer = 'AUDIT') || '|' ||
+      (SELECT a.event_type || ':' || a.producer_module || ':' || a.actor_id || ':' || a.resource_type || ':' ||
+              a.resource_id || ':' || a.resource_version || ':' || a.result || ':' || a.correlation_id || ':' ||
+              a.metadata::text
+        FROM audit_reporting.audit_events a WHERE a.source_event_id = '${disabledEventId}') || '|' ||
+      (SELECT e.status FROM ai.outbox_events e WHERE e.event_id = '${disabledEventId}')`,
+  ], { encoding: "utf8" }).trim(), { timeout: 30_000 }).toBe(
+    `DELIVERED:1|AI_SOURCE_DISABLED:AI:${disabledActorId}:AI_SOURCE:${createdAiSource.sourceId}:3:SUCCESS:`
+      + `${disabledCorrelationId}:{"newStatus": "DISABLED", "previousStatus": "READY"}|PENDING`,
+  );
+  await expect(page.getByRole("heading", { name: "Auditoría", exact: true })).toHaveCount(0);
+  const auditorUsername = `auditor.only.${Date.now()}`;
+  const auditorPassword = `Auditor-${crypto.randomUUID()}-Aa9!`;
+  const adminAuditAccess = await page.evaluate(async ({ api, csrf, user, secret }) => {
+    const audit = await fetch(`${api}/api/v1/audit/events`, { credentials: "include" });
+    const created = await fetch(`${api}/api/v1/users`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ username: user, password: secret, roles: ["AUDITOR"] }),
+    });
+    return { audit: audit.status, created: created.status };
+  }, { api: backendUrl!, csrf: adminSession.csrfToken, user: auditorUsername, secret: auditorPassword });
+  expect(adminAuditAccess).toEqual({ audit: 403, created: 201 });
   const disabledAiTempDir = mkdtempSync(join(tmpdir(), "jaxon-ai-disabled-source-"));
   try {
     const copiedDisabledSource = join(disabledAiTempDir, "stored.txt");
@@ -1980,6 +2016,60 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.getByRole("button", { name: "Actualizar información técnica" }).click();
   await expect(page.getByText("La sesión no autoriza consultar la información técnica observada.")).toBeVisible();
   await expect(page.getByRole("article", { name: "Última observación técnica" })).not.toBeVisible();
+
+  await page.context().clearCookies();
+  await page.goto("/login");
+  await page.getByLabel("Usuario").fill(auditorUsername);
+  await page.getByLabel("Contraseña").fill(auditorPassword);
+  const initialAuditResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/audit/events" && response.request().method() === "GET"
+  ));
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
+  await expect(page.getByRole("heading", { name: auditorUsername })).toBeVisible();
+  expect((await initialAuditResponse).status()).toBe(200);
+  const auditWorkspace = page.getByRole("region", { name: "Auditoría" });
+  await expect(auditWorkspace).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fuentes documentales" })).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Usuarios humanos" })).not.toBeVisible();
+  await auditWorkspace.getByLabel("Correlation ID").fill(disabledCorrelationId);
+  await auditWorkspace.getByLabel("Recurso ID").fill(createdAiSource.sourceId);
+  await auditWorkspace.getByLabel("Módulo").selectOption("AI");
+  const filteredAuditResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/audit/events" && response.request().method() === "GET"
+  ));
+  await auditWorkspace.getByRole("button", { name: "Consultar auditoría" }).click();
+  const filteredAudit = await filteredAuditResponse;
+  expect(new URL(filteredAudit.url()).search).toBe(
+    `?module=AI&resourceId=${createdAiSource.sourceId}&correlationId=${disabledCorrelationId}&page=0&size=50`,
+  );
+  const auditPage = await filteredAudit.json() as {
+    totalElements: number;
+    items: Array<Record<string, unknown>>;
+  };
+  expect(auditPage.totalElements).toBe(1);
+  expect(auditPage.items[0]).toMatchObject({
+    sourceEventId: disabledEventId,
+    eventType: "AI_SOURCE_DISABLED",
+    producerModule: "AI",
+    actorType: "HUMAN_USER",
+    actorId: disabledActorId,
+    resourceType: "AI_SOURCE",
+    resourceId: createdAiSource.sourceId,
+    resourceVersion: 3,
+    result: "SUCCESS",
+    correlationId: disabledCorrelationId,
+    metadata: { previousStatus: "READY", newStatus: "DISABLED" },
+  });
+  expect(JSON.stringify(auditPage)).not.toContain(aiName);
+  expect(JSON.stringify(auditPage)).not.toContain(aiStorageKey);
+  const auditCard = auditWorkspace.getByRole("article", { name: /Evento AI_SOURCE_DISABLED/ });
+  await expect(auditCard).toContainText(createdAiSource.sourceId);
+  await expect(auditCard).toContainText(disabledCorrelationId);
+  await expect(auditCard).toContainText("READY");
+  const auditorForbidden = await page.evaluate(async ({ api }) => (
+    await fetch(`${api}/api/v1/ai/sources?page=0&size=20`, { credentials: "include" })
+  ).status, { api: backendUrl! });
+  expect(auditorForbidden).toBe(403);
 
   await page.context().clearCookies();
   await page.goto("/");
