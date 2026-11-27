@@ -10,6 +10,7 @@ import { AuthorizedScopeWorkspace } from "@/features/discovery/authorized-scope-
 import { DiscoveryExecutorWorkspace } from "@/features/discovery/discovery-executor-workspace";
 import { DiscoveryJobWorkspace } from "@/features/discovery/discovery-job-workspace";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
+import { ReportingWorkspace } from "@/features/reporting/reporting-workspace";
 import { TicketWorkspace } from "@/features/support/ticket-workspace";
 import { TechnicianTicketWorkspace } from "@/features/support/technician-ticket-workspace";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -69,6 +70,10 @@ export default function HomePage() {
       {session.data.roles.includes("IT_OPERATOR") && <TicketWorkspace session={session.data} />}
       {session.data.roles.includes("SUPPORT_TECHNICIAN") && <TechnicianTicketWorkspace session={session.data} />}
       {session.data.roles.includes("AUDITOR") && <AuditWorkspace session={session.data} />}
+      {(session.data.roles.includes("AUDITOR")
+        || session.data.roles.includes("IT_OPERATOR")
+        || session.data.roles.includes("SUPPORT_TECHNICIAN"))
+        && <ReportingWorkspace session={session.data} />}
     </main>
   );
 }

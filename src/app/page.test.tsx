@@ -36,6 +36,10 @@ describe("HomePage", () => {
     expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Fuentes documentales" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Recuperación de evidencia" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Reportes" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Assets" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Agents" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Tickets" })).toBeNull();
   });
 
   it("clears cached state and redirects when the session is absent", async () => {
@@ -87,6 +91,9 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "Fuentes documentales" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Recuperación de evidencia" })).toBeNull();
     expect(await screen.findByRole("heading", { name: "Bandeja técnica" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Reportes" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Tickets" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Assets" })).toBeNull();
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeDefined();
   });
 
@@ -120,6 +127,7 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "Fuentes documentales" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Recuperación de evidencia" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Reportes" })).toBeDefined();
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/discovery/executors"))).toBe(true);
   });

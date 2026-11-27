@@ -31,12 +31,25 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.goto("/login");
   await page.getByLabel("Usuario").fill(username!);
   await page.getByLabel("Contraseña").fill(password!);
+  const initialOperatorReportResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/reports/assets"
+      && response.request().method() === "GET"
+  ));
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
 
-  await expect(page).toHaveURL("/");
+  await expect(page).toHaveURL((url) => (
+    url.pathname === "/"
+      && url.search === "?report=assets&reportPage=0&reportSize=50"
+  ));
+  expect((await initialOperatorReportResponse).status()).toBe(200);
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();
   await expect(page.getByText("IT OPERATOR")).toBeVisible();
   await expect(page.getByText("SYSTEM ADMIN")).toBeVisible();
+  const operatorReporting = page.getByRole("region", { name: "Reportes" });
+  await expect(operatorReporting).toBeVisible();
+  await expect(operatorReporting.getByRole("button", { name: "Assets" })).toBeVisible();
+  await expect(operatorReporting.getByRole("button", { name: "Agents" })).toBeVisible();
+  await expect(operatorReporting.getByRole("button", { name: "Tickets" })).toHaveCount(0);
 
   const aiWorkspace = page.getByRole("region", { name: "Fuentes documentales" });
   await expect(aiWorkspace).toBeVisible();
@@ -184,8 +197,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--command", `SELECT s.status || ':' || s.version || ':' || s.media_type || ':' || s.size_bytes || ':' ||
       s.sha256 || ':' ||
       (SELECT count(*) FROM ai.outbox_events e
-       WHERE e.resource_id = s.id AND e.event_type = 'AI_SOURCE_REGISTERED'
-         AND e.event_version = '1.0' AND e.producer_module = 'AI'
+         WHERE e.resource_id = s.id AND e.event_type = 'AI_SOURCE_REGISTERED'
+          AND e.event_version = '2.0' AND e.producer_module = 'AI'
          AND e.resource_type = 'AI_SOURCE' AND e.resource_version = 0
          AND e.payload = '{"status":"PENDING"}'::jsonb
          AND NOT e.payload ? 'name' AND NOT e.payload ? 'sha256')
@@ -719,12 +732,12 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--command", `SELECT j.status || ':' || j.version || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_CREATED'
-         AND e.resource_version = 0
-         AND e.payload = '{"status":"PENDING","profile":"BASIC"}'::jsonb) || ':' ||
+          AND e.event_version = '2.0' AND e.resource_version = 0
+          AND e.payload = '{}'::jsonb) || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_DISPATCHED'
-         AND e.resource_version = 1
-         AND e.payload = '{"status":"DISPATCHED"}'::jsonb)
+          AND e.event_version = '2.0' AND e.resource_version = 1
+          AND e.payload = '{}'::jsonb)
       FROM discovery.discovery_jobs j WHERE j.job_id = '${createdJob.jobId}'`,
   ], { encoding: "utf8" }).trim();
   expect(persistedJob).toBe("DISPATCHED:1:1:1");
@@ -836,8 +849,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--command", `SELECT d.status || ':' || d.version || ':' || (d.reviewed_at IS NOT NULL) || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = d.discovered_device_id AND e.event_type = 'DISCOVERED_DEVICE_IGNORED'
-         AND e.resource_version = 1
-         AND e.payload = '{"newStatus":"IGNORED","previousStatus":"UNREVIEWED"}'::jsonb) || ':' ||
+          AND e.event_version = '2.0' AND e.resource_version = 1
+          AND e.payload = '{"newStatus":"IGNORED","previousStatus":"UNREVIEWED"}'::jsonb) || ':' ||
       (SELECT count(*) FROM inventory.assets)
        FROM discovery.discovered_devices d
        WHERE d.job_id = '${createdJob.jobId}' AND d.status = 'IGNORED'`,
@@ -851,7 +864,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
        WHERE d.job_id = j.job_id AND d.status = 'IGNORED') || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = j.job_id AND e.event_type = 'DISCOVERY_JOB_COMPLETED'
-         AND e.resource_version = 2)
+          AND e.event_version = '2.0' AND e.resource_version = 2
+          AND e.payload = '{}'::jsonb)
       FROM discovery.discovery_jobs j WHERE j.job_id = '${createdJob.jobId}'`,
   ], { encoding: "utf8" }).trim();
   expect(persistedDiscoveryResult).toBe("SUCCEEDED:2:1:1");
@@ -870,12 +884,12 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--command", `SELECT s.status || ':' || s.version || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = s.id AND e.event_type = 'DISCOVERY_SCOPE_CREATED'
-         AND e.resource_version = 0 AND e.payload = '{"status":"ACTIVE"}'::jsonb
-         AND NOT e.payload ? 'name' AND NOT e.payload ? 'cidr') || ':' ||
+          AND e.event_version = '2.0' AND e.resource_version = 0 AND e.payload = '{}'::jsonb
+          AND NOT e.payload ? 'name' AND NOT e.payload ? 'cidr') || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = s.id AND e.event_type = 'DISCOVERY_SCOPE_STATUS_CHANGED'
-         AND e.resource_version = 1
-         AND e.payload = '{"previousStatus":"ACTIVE","newStatus":"DISABLED"}'::jsonb
+          AND e.event_version = '2.0' AND e.resource_version = 1
+          AND e.payload = '{"previousStatus":"ACTIVE","newStatus":"DISABLED"}'::jsonb
          AND NOT e.payload ? 'name' AND NOT e.payload ? 'cidr')
       FROM discovery.authorized_scopes s WHERE s.id = '${createdScope.scopeId}'`,
   ], { encoding: "utf8" }).trim();
@@ -889,14 +903,16 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
        ((x.sftp_username = '${executorConnection.username}' AND x.activated_at IS NOT NULL)::int) || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = x.id AND e.event_type = 'DISCOVERY_EXECUTOR_PRE_REGISTERED'
-         AND e.resource_version = 0 AND e.payload = '{"status":"PENDING"}'::jsonb) || ':' ||
+          AND e.event_version = '2.0' AND e.resource_version = 0
+          AND e.payload = '{}'::jsonb) || ':' ||
       (SELECT count(*) FROM identity.technical_identities i
        WHERE i.discovery_executor_id = x.id AND i.agent_id IS NULL
          AND i.identity_type = 'DISCOVERY_EXECUTOR'
          AND i.public_key_fingerprint = '${initializedExecutor.publicKeyFingerprint}') || ':' ||
        (SELECT count(*) FROM discovery.outbox_events e
-        WHERE e.resource_id = x.id AND e.event_type = 'DISCOVERY_EXECUTOR_ACTIVATED'
-          AND e.resource_version = 1 AND e.payload = '{"status":"ACTIVE"}'::jsonb) || ':' ||
+         WHERE e.resource_id = x.id AND e.event_type = 'DISCOVERY_EXECUTOR_ACTIVATED'
+           AND e.event_version = '2.0' AND e.resource_version = 1
+           AND e.payload = '{}'::jsonb) || ':' ||
        (SELECT count(*) FROM identity.outbox_events e
         WHERE e.resource_id = x.id
          AND e.event_type = 'DISCOVERY_EXECUTOR_PUBLIC_KEY_REGISTERED'
@@ -926,7 +942,9 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--command", `SELECT u.status || ':' || string_agg(r.role_code, ',' ORDER BY r.role_code) || ':' ||
       (SELECT count(*) FROM identity.outbox_events e
        WHERE e.event_type = 'HUMAN_USER_CREATED' AND e.resource_id = u.id
-         AND e.payload = '{"status":"ACTIVE"}'::jsonb)
+          AND e.event_version = '2.0'
+          AND e.payload = jsonb_build_object(
+            'status', 'ACTIVE', 'roles', 'SUPPORT_TECHNICIAN'))
       FROM identity.human_users u
       JOIN identity.human_user_roles r ON r.user_id = u.id
       WHERE u.normalized_username = '${supportUsername}'
@@ -942,14 +960,30 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page).toHaveURL(/\/login$/);
   await page.getByLabel("Usuario").fill(supportUsername);
   await page.getByLabel("Contraseña").fill(supportPassword);
+  const initialSupportReportResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/reports/tickets"
+      && response.request().method() === "GET"
+  ));
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
-  await expect(page).toHaveURL(/\/(?:\?page=0&size=20)?$/);
+  await expect(page).toHaveURL((url) => (
+    url.pathname === "/"
+      && url.searchParams.get("page") === "0"
+      && url.searchParams.get("size") === "20"
+      && url.searchParams.get("report") === "tickets"
+      && url.searchParams.get("reportPage") === "0"
+      && url.searchParams.get("reportSize") === "50"
+  ));
+  expect((await initialSupportReportResponse).status()).toBe(200);
   await expect(page.getByRole("heading", { name: supportUsername })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Usuarios humanos" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Activos" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Tickets" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Fuentes documentales" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Bandeja técnica" })).toBeVisible();
+  const supportReporting = page.getByRole("region", { name: "Reportes" });
+  await expect(supportReporting.getByRole("button", { name: "Tickets" })).toBeVisible();
+  await expect(supportReporting.getByRole("button", { name: "Assets" })).toHaveCount(0);
+  await expect(supportReporting.getByRole("button", { name: "Agents" })).toHaveCount(0);
   const forbiddenAiOperations = await page.evaluate(async ({ api, sourceId }) => {
     const sessionResponse = await fetch(`${api}/api/v1/auth/me`, { credentials: "include" });
     const session = await sessionResponse.json() as { csrfToken: string };
@@ -1002,12 +1036,16 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.getByLabel("Usuario").fill(username!);
   await page.getByLabel("Contraseña").fill(password!);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
-  await expect(page).toHaveURL("/");
+  await expect(page).toHaveURL((url) => (
+    url.pathname === "/"
+      && url.search === "?report=assets&reportPage=0&reportSize=50"
+  ));
 
   const assetName = `E2E Workstation ${Date.now()}`;
   const createResponse = page.waitForResponse((response) => response.url().endsWith("/api/v1/assets") && response.request().method() === "POST");
-  await page.getByRole("region", { name: "Activos" }).getByLabel("Nombre", { exact: true }).fill(assetName);
-  await page.getByLabel("Tipo").selectOption("LAPTOP");
+  const assetWorkspace = page.getByRole("region", { name: "Activos" });
+  await assetWorkspace.getByLabel("Nombre", { exact: true }).fill(assetName);
+  await assetWorkspace.getByLabel("Tipo", { exact: true }).selectOption("LAPTOP");
   await page.getByRole("button", { name: "Registrar activo" }).click();
   expect((await createResponse).status()).toBe(201);
 
@@ -1051,8 +1089,8 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     "--command", `SELECT d.status || ':' || d.version || ':' || d.inventory_asset_id || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = d.discovered_device_id
-         AND e.event_type = 'DISCOVERED_DEVICE_INCORPORATED'
-         AND e.event_version = '1.0' AND e.producer_module = 'DISCOVERY'
+          AND e.event_type = 'DISCOVERED_DEVICE_INCORPORATED'
+          AND e.event_version = '2.0' AND e.producer_module = 'DISCOVERY'
          AND e.resource_type = 'DISCOVERED_DEVICE' AND e.resource_version = 1
          AND e.payload = jsonb_build_object('previousStatus', 'UNREVIEWED',
            'newStatus', 'INCORPORATED', 'assetId', '${assetId}'))
@@ -1103,12 +1141,12 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
       a.name || ':' || a.asset_type || ':' || a.status || ':' || a.version || ':' ||
       (SELECT count(*) FROM inventory.outbox_events e
        WHERE e.resource_id = a.id AND e.event_type = 'ASSET_CREATED'
-         AND e.event_version = '1.0' AND e.producer_module = 'INVENTORY'
+          AND e.event_version = '2.0' AND e.producer_module = 'INVENTORY'
          AND e.resource_type = 'ASSET' AND e.resource_version = 0 AND e.payload = '{}'::jsonb) || ':' ||
       (SELECT count(*) FROM discovery.outbox_events e
        WHERE e.resource_id = d.discovered_device_id
-         AND e.event_type = 'DISCOVERED_DEVICE_INCORPORATED'
-         AND e.event_version = '1.0' AND e.producer_module = 'DISCOVERY'
+          AND e.event_type = 'DISCOVERED_DEVICE_INCORPORATED'
+          AND e.event_version = '2.0' AND e.producer_module = 'DISCOVERY'
          AND e.resource_type = 'DISCOVERED_DEVICE' AND e.resource_version = 1
          AND e.payload = jsonb_build_object('previousStatus', 'UNREVIEWED',
            'newStatus', 'INCORPORATED', 'assetId', a.id::text))
@@ -1266,7 +1304,14 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await page.getByLabel("Contraseña").fill(supportPassword);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
   await expect(page.getByRole("heading", { name: "Bandeja técnica" })).toBeVisible();
-  await expect(page).toHaveURL(/\?page=0&size=20$/);
+  await expect(page).toHaveURL((url) => (
+    url.pathname === "/"
+      && url.searchParams.get("page") === "0"
+      && url.searchParams.get("size") === "20"
+      && url.searchParams.get("report") === "tickets"
+      && url.searchParams.get("reportPage") === "0"
+      && url.searchParams.get("reportSize") === "50"
+  ));
   await page.getByRole("button", { name: new RegExp(ticketSummary) }).click();
   const technicianTicketCard = page.getByRole("article", { name: "Detalle técnico del ticket" });
   await expect(technicianTicketCard).toContainText(ticketDescription);
@@ -1286,7 +1331,7 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
     response.url().endsWith(`/api/v1/tickets/${ticketId}/priority`)
       && response.request().method() === "PUT"
   ));
-  await page.getByLabel("Prioridad", { exact: true }).selectOption("URGENT");
+  await technicianTicketCard.getByLabel("Prioridad", { exact: true }).selectOption("URGENT");
   expect((await priorityResponse).status()).toBe(200);
   await expect(technicianTicketCard).toContainText("URGENT");
   await expect(technicianTicketCard).toContainText("Versión2");
@@ -2013,6 +2058,17 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   }, { api: backendUrl!, csrf: currentSession.csrfToken as string });
   expect(forbidden.status).toBe(403);
   expect(forbidden.body.code).toBe("ACCESS_DENIED");
+  const systemAdminReportAccess = await page.evaluate(async (api) => {
+    const request = async (path: string) => (await fetch(`${api}/api/v1/reports/${path}`, {
+      credentials: "include",
+    })).status;
+    return {
+      assets: await request("assets?page=0&size=50"),
+      agents: await request("agents?page=0&size=50"),
+      tickets: await request("tickets?page=0&size=50"),
+    };
+  }, backendUrl!);
+  expect(systemAdminReportAccess).toEqual({ assets: 403, agents: 403, tickets: 403 });
   await page.getByRole("button", { name: "Actualizar información técnica" }).click();
   await expect(page.getByText("La sesión no autoriza consultar la información técnica observada.")).toBeVisible();
   await expect(page.getByRole("article", { name: "Última observación técnica" })).not.toBeVisible();
@@ -2024,11 +2080,19 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   const initialAuditResponse = page.waitForResponse((response) => (
     new URL(response.url()).pathname === "/api/v1/audit/events" && response.request().method() === "GET"
   ));
+  const initialAuditorReportResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/reports/assets" && response.request().method() === "GET"
+  ));
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
   await expect(page.getByRole("heading", { name: auditorUsername })).toBeVisible();
   expect((await initialAuditResponse).status()).toBe(200);
+  expect((await initialAuditorReportResponse).status()).toBe(200);
   const auditWorkspace = page.getByRole("region", { name: "Auditoría" });
+  const auditorReporting = page.getByRole("region", { name: "Reportes" });
   await expect(auditWorkspace).toBeVisible();
+  await expect(auditorReporting.getByRole("button", { name: "Assets" })).toBeVisible();
+  await expect(auditorReporting.getByRole("button", { name: "Agents" })).toBeVisible();
+  await expect(auditorReporting.getByRole("button", { name: "Tickets" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Fuentes documentales" })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Usuarios humanos" })).not.toBeVisible();
   await auditWorkspace.getByLabel("Correlation ID").fill(disabledCorrelationId);
@@ -2066,6 +2130,47 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(auditCard).toContainText(createdAiSource.sourceId);
   await expect(auditCard).toContainText(disabledCorrelationId);
   await expect(auditCard).toContainText("READY");
+  await auditorReporting.getByLabel("Estado").selectOption("ACTIVE");
+  const filteredAssetReportResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/reports/assets"
+      && url.searchParams.get("status") === "ACTIVE"
+      && response.request().method() === "GET";
+  });
+  await auditorReporting.getByRole("button", { name: "Aplicar filtros" }).click();
+  const filteredAssetReport = await filteredAssetReportResponse;
+  expect(new URL(filteredAssetReport.url()).search).toBe("?status=ACTIVE&page=0&size=50");
+  await expect(auditorReporting.getByText(assetId)).toBeVisible();
+  await expect(page).toHaveURL(/report=assets/);
+  await expect(page).toHaveURL(/reportStatus=ACTIVE/);
+
+  const exportResponsePromise = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/reports/assets/export"
+      && response.request().method() === "GET"
+  ));
+  const downloadPromise = page.waitForEvent("download");
+  await auditorReporting.getByRole("button", { name: "Descargar CSV" }).click();
+  const [exportResponse, download] = await Promise.all([exportResponsePromise, downloadPromise]);
+  expect(exportResponse.status()).toBe(200);
+  expect(new URL(exportResponse.url()).search).toBe("?status=ACTIVE");
+  expect(download.suggestedFilename()).toBe("assets-report.csv");
+  const csvPath = await download.path();
+  expect(csvPath).not.toBeNull();
+  const csvBytes = readFileSync(csvPath!);
+  expect(csvBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))).toBe(false);
+  expect(csvBytes.toString("utf8")).toContain('"assetId","name","assetType","status","createdAt","updatedAt"\r\n');
+  expect(csvBytes.toString("utf8")).toContain(`"${assetId}"`);
+  expect(csvBytes.toString("utf8")).toContain(`"${assetName}"`);
+  expect(execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT count(*) FROM audit_reporting.audit_events
+      WHERE event_type = 'REPORT_EXPORTED' AND event_version = '1.0'
+        AND producer_module = 'AUDIT_REPORTING' AND resource_type = 'REPORT_EXPORT'
+        AND result = 'SUCCESS'
+        AND metadata->>'format' = 'CSV' AND metadata->>'reportType' = 'ASSETS'
+        AND (metadata->>'rowCount')::integer >= 1`,
+  ], { encoding: "utf8" }).trim()).toBe("1");
   const auditorForbidden = await page.evaluate(async ({ api }) => (
     await fetch(`${api}/api/v1/ai/sources?page=0&size=20`, { credentials: "include" })
   ).status, { api: backendUrl! });
