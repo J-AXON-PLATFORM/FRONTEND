@@ -1512,8 +1512,82 @@ test("logs in, manages a persisted asset, and enforces the security boundary", a
   await expect(page).toHaveURL(/\/login$/);
   await page.getByLabel("Usuario", { exact: true }).fill(username!);
   await page.getByLabel("Contraseña").fill(password!);
+  const requesterNotificationsResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/notifications"
+      && response.request().method() === "GET"
+      && url.searchParams.get("page") === "0"
+      && url.searchParams.get("size") === "20";
+  });
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
   await expect(page.getByRole("heading", { name: username! })).toBeVisible();
+  const requesterNotifications = await (await requesterNotificationsResponse).json() as {
+    items: Array<{
+      notificationId: string; type: string; resourceType: string; resourceId: string;
+      status: string; version: number; createdAt: string; readAt: string | null;
+    }>;
+  };
+  const waitingNotification = requesterNotifications.items.find((item) => item.resourceId === ticketId);
+  expect(waitingNotification).toEqual(expect.objectContaining({
+    type: "TICKET_WAITING_FOR_REQUESTER",
+    resourceType: "TICKET",
+    resourceId: ticketId,
+    status: "UNREAD",
+    version: 0,
+    readAt: null,
+  }));
+  expect(Object.keys(waitingNotification!).sort()).toEqual([
+    "createdAt", "notificationId", "readAt",
+    "resourceId", "resourceType", "status", "type", "version",
+  ]);
+  const notificationWorkspace = page.getByRole("region", { name: "Notificaciones" });
+  const waitingNotificationCard = notificationWorkspace.getByRole("article", {
+    name: "Notificación TICKET_WAITING_FOR_REQUESTER",
+  });
+  await expect(waitingNotificationCard).toContainText(ticketId);
+  await expect(waitingNotificationCard).toContainText("No leída");
+  const markReadResponse = page.waitForResponse((response) => (
+    response.url().endsWith(`/api/v1/notifications/${waitingNotification!.notificationId}/read`)
+      && response.request().method() === "POST"
+  ));
+  const refreshedNotifications = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/v1/notifications"
+      && response.request().method() === "GET"
+  ));
+  await waitingNotificationCard.getByRole("button", { name: "Marcar como leída" }).click();
+  const markedRead = await markReadResponse;
+  expect(markedRead.status()).toBe(200);
+  expect(JSON.parse(markedRead.request().postData() ?? "{}")).toEqual({ expectedVersion: 0 });
+  expect(await markedRead.json()).toEqual(expect.objectContaining({
+    notificationId: waitingNotification!.notificationId,
+    status: "READ",
+    version: 1,
+  }));
+  expect((await refreshedNotifications).status()).toBe(200);
+  await expect(waitingNotificationCard).toContainText("Leída");
+  await expect(waitingNotificationCard.getByRole("button", { name: "Marcar como leída" })).toHaveCount(0);
+  await expect.poll(() => execFileSync("docker", [
+    "exec", databaseContainer!, "psql", "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+    "--tuples-only", "--no-align", "--username", "jaxon_e2e", "--dbname", "jaxon_e2e",
+    "--command", `SELECT
+      sd.status || ':' || sd.attempts || '|' ||
+      x.status || ':' || x.attempts || '|' ||
+      n.status || ':' || n.version || '|' ||
+      ad.status || ':' || ad.attempts || '|' ||
+      a.event_type || ':' || a.producer_module || ':' || a.result
+      FROM automation.notifications n
+      JOIN automation.executions x ON x.execution_id = n.execution_id
+      JOIN support.outbox_deliveries sd
+        ON sd.event_id = x.source_event_id AND sd.consumer = 'AUTOMATION'
+      JOIN automation.outbox_events ae ON ae.resource_id = x.execution_id
+        AND ae.event_type = 'AUTOMATION_EXECUTION_SUCCEEDED'
+      JOIN automation.outbox_deliveries ad
+        ON ad.event_id = ae.event_id AND ad.consumer = 'AUDIT'
+      JOIN audit_reporting.audit_events a ON a.source_event_id = ae.event_id
+      WHERE n.notification_id = '${waitingNotification!.notificationId}'`,
+  ], { encoding: "utf8" }).trim(), { timeout: 30_000 }).toBe(
+    "DELIVERED:1|SUCCEEDED:1|READ:1|DELIVERED:1|AUTOMATION_EXECUTION_SUCCEEDED:AUTOMATION:SUCCESS",
+  );
 
   const requesterConversationResponse = page.waitForResponse((response) => (
     response.url().includes(`/api/v1/tickets/${ticketId}/comments?`)

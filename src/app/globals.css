@@ -180,6 +180,79 @@ h1 {
   box-shadow: 1.5rem 1.5rem 0 rgb(21 27 25 / 7%);
 }
 
+.notification-workspace {
+  width: min(100%, 76rem);
+  margin: 5rem auto 0;
+}
+
+.notification-heading { border-bottom-color: #8a5a17; }
+
+.notification-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  border-top: 0.45rem solid #8a5a17;
+  padding: 1.25rem;
+  background: var(--panel);
+}
+
+.notification-toolbar label {
+  display: grid;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.notification-toolbar select {
+  min-height: 2.8rem;
+  border: 1px solid var(--line);
+  padding: 0.5rem 2rem 0.5rem 0.7rem;
+  color: var(--ink);
+  background: var(--panel);
+}
+
+.notification-toolbar button,
+.notification-pagination button,
+.notification-list article > button {
+  min-height: 2.8rem;
+  border: 1px solid #6f4512;
+  padding: 0.55rem 0.8rem;
+  color: #593608;
+  background: #fff4d7;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.notification-toolbar button:hover:not(:disabled),
+.notification-pagination button:hover:not(:disabled),
+.notification-list article > button:hover:not(:disabled) {
+  color: white;
+  background: #6f4512;
+}
+
+.notification-toolbar :disabled,
+.notification-pagination :disabled,
+.notification-list article > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.notification-results { display: grid; gap: 1rem; margin-top: 1rem; }
+.notification-list { display: grid; gap: 0.8rem; margin: 0; padding: 0; list-style: none; }
+.notification-list article { border: 1px solid var(--line); border-left: 0.35rem solid #8a5a17; padding: 1.25rem; background: var(--panel); }
+.notification-list article header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.notification-list h3 { margin: 0; font-size: 1.2rem; }
+.notification-list p { overflow-wrap: anywhere; }
+.notification-status { border: 1px solid currentColor; padding: 0.3rem 0.45rem; font-family: ui-monospace, monospace; font-size: 0.68rem; font-weight: 850; text-transform: uppercase; }
+.notification-status-unread { color: #8a3f17; }
+.notification-status-read { color: #285f51; }
+.notification-time { margin: 0.35rem 0; color: var(--muted); font-size: 0.8rem; }
+.notification-list article > button { margin-top: 0.75rem; }
+.notification-pagination { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.notification-pagination span { color: var(--muted); font-size: 0.78rem; text-align: center; }
+
 .role-list { display: flex; flex-wrap: wrap; gap: 0.65rem; margin: 0; padding: 0; list-style: none; }
 .role-list li { border: 1px solid var(--dark); padding: 0.55rem 0.75rem; font-family: ui-monospace, monospace; font-size: 0.8rem; }
 
