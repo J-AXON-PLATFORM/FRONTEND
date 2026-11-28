@@ -10,6 +10,7 @@ import { AuthorizedScopeWorkspace } from "@/features/discovery/authorized-scope-
 import { DiscoveryExecutorWorkspace } from "@/features/discovery/discovery-executor-workspace";
 import { DiscoveryJobWorkspace } from "@/features/discovery/discovery-job-workspace";
 import { AssetWorkspace } from "@/features/inventory/asset-workspace";
+import { NotificationWorkspace } from "@/features/notifications/notification-workspace";
 import { ReportingWorkspace } from "@/features/reporting/reporting-workspace";
 import { TicketWorkspace } from "@/features/support/ticket-workspace";
 import { TechnicianTicketWorkspace } from "@/features/support/technician-ticket-workspace";
@@ -57,6 +58,7 @@ export default function HomePage() {
           {session.data.roles.map((role) => <li key={role}>{role.replaceAll("_", " ")}</li>)}
         </ul>
       </section>
+      <NotificationWorkspace session={session.data} />
       {session.data.roles.includes("SYSTEM_ADMIN") && <UserAdministration session={session.data} />}
       {session.data.roles.includes("SYSTEM_ADMIN") && <AiSourceWorkspace session={session.data} />}
       {session.data.roles.includes("SYSTEM_ADMIN") && <AiRetrievalWorkspace session={session.data} />}

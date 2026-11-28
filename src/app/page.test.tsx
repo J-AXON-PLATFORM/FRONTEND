@@ -32,6 +32,7 @@ describe("HomePage", () => {
     expect(await screen.findByRole("heading", { name: "Bootstrap.Admin" })).toBeDefined();
     expect(screen.getByText("IT OPERATOR")).toBeDefined();
     expect(screen.getByText("SYSTEM ADMIN")).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Notificaciones" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Discovery Executors" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Discovery Jobs" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Fuentes documentales" })).toBeDefined();
@@ -84,6 +85,7 @@ describe("HomePage", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Support.Only" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Notificaciones" })).toBeDefined();
     expect(screen.queryByRole("heading", { name: "Usuarios humanos" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Activos" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Tickets" })).toBeNull();
